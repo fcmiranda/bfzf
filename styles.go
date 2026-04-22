@@ -33,13 +33,31 @@ type Styles struct {
 	// NoMatches styles the "no matches" message.
 	NoMatches lipgloss.Style
 
+	// ListTitle styles the optional title bar drawn above the list.
+	ListTitle lipgloss.Style
+
+	// ListBorder is applied as a lipgloss border around the entire list pane.
+	// Leave zero-value to disable the list border.
+	ListBorder lipgloss.Style
+
 	// PreviewBorder styles the divider character(s) between the list and
-	// the preview pane.
+	// the preview pane. Also used as the outer border around the preview when
+	// WithPreviewBorder is enabled.
 	PreviewBorder lipgloss.Style
 
 	// PreviewTitle styles the one-line title bar at the top of the preview pane
 	// that shows the focused item's label.
 	PreviewTitle lipgloss.Style
+
+	// PreviewLineCount styles the "n/total" scroll indicator in the preview.
+	PreviewLineCount lipgloss.Style
+
+	// PreviewFocused is applied to the preview title bar when the preview has
+	// keyboard focus (i.e. after pressing the FocusPreview key).
+	PreviewFocused lipgloss.Style
+
+	// Input styles the text-input search box.
+	Input lipgloss.Style
 }
 
 // DefaultStyles returns an opinionated dark-terminal style set.
@@ -78,6 +96,13 @@ func DefaultStyles() Styles {
 			Foreground(lipgloss.Color("241")).
 			Italic(true),
 
+		ListTitle: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("212")).
+			PaddingLeft(1),
+
+		ListBorder: lipgloss.Style{}, // zero = no border by default
+
 		PreviewBorder: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")),
 
@@ -85,5 +110,15 @@ func DefaultStyles() Styles {
 			Foreground(lipgloss.Color("99")).
 			Italic(true).
 			PaddingLeft(1),
+
+		PreviewLineCount: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")),
+
+		PreviewFocused: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("212")).
+			PaddingLeft(1),
+
+		Input: lipgloss.Style{}, // zero = no extra styling by default
 	}
 }

@@ -24,6 +24,7 @@
 package bfzf
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -164,6 +165,23 @@ type Model struct {
 	// lastPreviewIdx is the item index that last triggered a preview;
 	// used to discard stale results and avoid duplicate work.
 	lastPreviewIdx int
+	// previewFocused is true when keyboard focus is on the preview pane.
+	// (reserved for future use — focus toggle removed)
+
+	// showPreviewBorder toggles a full box border around the preview pane.
+	showPreviewBorder bool
+
+	// ── List decorations ─────────────────────────────────────────────────────
+
+	// listTitle is an optional title drawn above the list.
+	listTitle string
+	// showListBorder toggles a box border around the list pane.
+	showListBorder bool
+
+	// ── Input ────────────────────────────────────────────────────────────────
+
+	// hideInput hides the search text input (list-only mode).
+	hideInput bool
 
 	// ── Sort ─────────────────────────────────────────────────────────────────
 
@@ -262,6 +280,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyPressMsg:
+		// Global keys (always active).
 		switch {
 		case matchesAny(msg, m.keymap.Abort):
 			m.quitting = true
@@ -271,61 +290,79 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 
-		case matchesAny(msg, m.keymap.Submit):
-			if len(m.selectableIdxs) > 0 {
-				// In single-select mode auto-mark the cursor item.
-				if m.Limit == 1 && m.cursorPos >= 0 {
-					m.selected[m.selectableIdxs[m.cursorPos]] = struct{}{}
-				}
-				m.submitted = true
-				m.quitting = true
-				return m, tea.Quit
-			}
+		// Preview scroll keys — always route to preview viewport.
+		case matchesAny(msg, m.keymap.PreviewDown):
+			m.previewVP.SetYOffset(m.previewVP.YOffset() + 1)
+		case matchesAny(msg, m.keymap.PreviewUp):
+			m.previewVP.SetYOffset(m.previewVP.YOffset() - 1)
+		case matchesAny(msg, m.keymap.PreviewPageDown):
+			m.previewVP.SetYOffset(m.previewVP.YOffset() + m.previewVP.Height())
+		case matchesAny(msg, m.keymap.PreviewPageUp):
+			m.previewVP.SetYOffset(m.previewVP.YOffset() - m.previewVP.Height())
+		case matchesAny(msg, m.keymap.PreviewTop):
+			m.previewVP.GotoTop()
+		case matchesAny(msg, m.keymap.PreviewBottom):
+			m.previewVP.GotoBottom()
 
-		case matchesAny(msg, m.keymap.Down):
-			m.moveCursorDown()
-
-		case matchesAny(msg, m.keymap.Up):
-			m.moveCursorUp()
-
-		case matchesAny(msg, m.keymap.Home):
-			m.moveCursorToStart()
-
-		case matchesAny(msg, m.keymap.End):
-			m.moveCursorToEnd()
-
-		case matchesAny(msg, m.keymap.Toggle):
-			if m.Limit != 1 {
-				m.toggleSelection()
-			}
-
-		case matchesAny(msg, m.keymap.ToggleAndNext):
-			if m.Limit != 1 {
-				m.toggleSelection()
-				m.moveCursorDown()
-			}
-
-		case matchesAny(msg, m.keymap.ToggleAndPrev):
-			if m.Limit != 1 {
-				m.toggleSelection()
-				m.moveCursorUp()
-			}
-
-		case matchesAny(msg, m.keymap.SelectAll):
-			if m.Limit == 0 {
-				m.selectAll()
-			}
-
+		// List navigation and selection.
 		default:
-			// Pass unhandled keys to the text input.
-			prev := m.input.Value()
-			var inputCmd tea.Cmd
-			m.input, inputCmd = m.input.Update(msg)
-			if inputCmd != nil {
-				cmds = append(cmds, inputCmd)
-			}
-			if m.input.Value() != prev {
-				m.updateFilter()
+			switch {
+			case matchesAny(msg, m.keymap.Submit):
+				if len(m.selectableIdxs) > 0 {
+					if m.Limit == 1 && m.cursorPos >= 0 {
+						m.selected[m.selectableIdxs[m.cursorPos]] = struct{}{}
+					}
+					m.submitted = true
+					m.quitting = true
+					return m, tea.Quit
+				}
+
+			case matchesAny(msg, m.keymap.Down):
+				m.moveCursorDown()
+
+			case matchesAny(msg, m.keymap.Up):
+				m.moveCursorUp()
+
+			case matchesAny(msg, m.keymap.Home):
+				m.moveCursorToStart()
+
+			case matchesAny(msg, m.keymap.End):
+				m.moveCursorToEnd()
+
+			case matchesAny(msg, m.keymap.Toggle):
+				if m.Limit != 1 {
+					m.toggleSelection()
+				}
+
+			case matchesAny(msg, m.keymap.ToggleAndNext):
+				if m.Limit != 1 {
+					m.toggleSelection()
+					m.moveCursorDown()
+				}
+
+			case matchesAny(msg, m.keymap.ToggleAndPrev):
+				if m.Limit != 1 {
+					m.toggleSelection()
+					m.moveCursorUp()
+				}
+
+			case matchesAny(msg, m.keymap.SelectAll):
+				if m.Limit == 0 {
+					m.selectAll()
+				}
+
+			default:
+				if !m.hideInput {
+					prev := m.input.Value()
+					var inputCmd tea.Cmd
+					m.input, inputCmd = m.input.Update(msg)
+					if inputCmd != nil {
+						cmds = append(cmds, inputCmd)
+					}
+					if m.input.Value() != prev {
+						m.updateFilter()
+					}
+				}
 			}
 		}
 	}
@@ -596,49 +633,114 @@ func (m *Model) selectAll() {
 // Rendering helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-// render assembles the full TUI output. When a preview function is set the
-// output is a horizontally or vertically split panel.
+// render assembles the full TUI output.
+// The search input always spans the full width above any split.
 func (m *Model) render() string {
 	helpStr := m.renderHelp()
-	listVP := m.vp.View()
+	listPane := m.renderListPane()
+
+	// Compact helper: join non-empty strings with newlines.
+	join := func(parts ...string) string {
+		var out []string
+		for _, p := range parts {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+
+	var inputView string
+	if !m.hideInput {
+		inputView = m.input.View()
+	}
 
 	if m.previewFunc == nil {
-		return strings.Join([]string{m.input.View(), listVP, helpStr}, "\n")
+		return join(inputView, listPane, helpStr)
 	}
 
 	previewPane := m.renderPreviewPane()
 
 	switch m.previewPos {
 	case PreviewRight:
-		// Vertical bar separator styled with PreviewBorder.
-		barHeight := m.vp.Height()
-		bar := m.styles.PreviewBorder.Render(
-			strings.Repeat("│\n", barHeight-1) + "│",
-		)
-		splitPanel := lipgloss.JoinHorizontal(lipgloss.Top, listVP, bar, previewPane)
-		return strings.Join([]string{m.input.View(), splitPanel, helpStr}, "\n")
+		var splitPanel string
+		if m.showPreviewBorder {
+			splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
+		} else {
+			barHeight := m.vp.Height()
+			bar := m.styles.PreviewBorder.Render(
+				strings.Repeat("│\n", barHeight-1) + "│",
+			)
+			splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, bar, previewPane)
+		}
+		return join(inputView, splitPanel, helpStr)
 
 	case PreviewBottom:
 		sep := m.styles.PreviewBorder.Render(strings.Repeat("─", m.width))
-		return strings.Join([]string{
-			m.input.View(), listVP, sep, previewPane, helpStr,
-		}, "\n")
+		return join(inputView, listPane, sep, previewPane, helpStr)
 	}
 
-	// Fallback (should not be reached).
-	return strings.Join([]string{m.input.View(), listVP, helpStr}, "\n")
+	return join(inputView, listPane, helpStr)
 }
 
-// renderPreviewPane builds the preview panel: a title bar + viewport content.
-func (m *Model) renderPreviewPane() string {
-	// Title bar shows the label of the currently focused item.
-	title := ""
-	if m.cursorPos >= 0 && m.cursorPos < len(m.selectableIdxs) {
-		title = m.styles.PreviewTitle.Render(
-			m.items[m.selectableIdxs[m.cursorPos]].Label(),
-		)
+// renderListPane builds the list side: optional title + viewport, with optional border.
+// The search input is NOT included here; render() places it above any split.
+func (m *Model) renderListPane() string {
+	var parts []string
+	if m.listTitle != "" {
+		parts = append(parts, m.styles.ListTitle.Render(m.listTitle))
 	}
-	return strings.Join([]string{title, m.previewVP.View()}, "\n")
+	parts = append(parts, m.vp.View())
+	content := strings.Join(parts, "\n")
+	if m.showListBorder {
+		return m.styles.ListBorder.Render(content)
+	}
+	return content
+}
+
+// renderPreviewPane builds the preview panel: title bar w/ line count + viewport content.
+func (m *Model) renderPreviewPane() string {
+	var titleStr string
+	if m.cursorPos >= 0 && m.cursorPos < len(m.selectableIdxs) {
+		label := m.items[m.selectableIdxs[m.cursorPos]].Label()
+		titleStr = m.styles.PreviewTitle.Render(label)
+	}
+
+	// Line count indicator: currentLine/totalLines
+	lineCount := m.renderPreviewLineCount()
+
+	// Title row: title on left, line count on right.
+	var titleRow string
+	if titleStr != "" || lineCount != "" {
+		titleRow = titleStr + lineCount
+	}
+
+	vpView := m.previewVP.View()
+
+	var content string
+	if titleRow != "" {
+		content = strings.Join([]string{titleRow, vpView}, "\n")
+	} else {
+		content = vpView
+	}
+
+	if m.showPreviewBorder {
+		return m.styles.PreviewBorder.Render(content)
+	}
+	return content
+}
+
+// renderPreviewLineCount returns the "n/total" scroll indicator.
+func (m *Model) renderPreviewLineCount() string {
+	total := m.previewVP.TotalLineCount()
+	if total == 0 {
+		return ""
+	}
+	current := m.previewVP.YOffset() + 1
+	if current > total {
+		current = total
+	}
+	return m.styles.PreviewLineCount.Render(fmt.Sprintf(" %d/%d", current, total))
 }
 
 // renderList builds the string content for the viewport.
@@ -714,12 +816,16 @@ func (m *Model) renderList() string {
 
 // renderHelp returns a compact help line.
 func (m *Model) renderHelp() string {
-	hints := []string{"↑/↓ navigate", "enter select"}
+	var hints []string
+	hints = append(hints, "↑/↓ navigate", "enter select")
 	if m.Limit != 1 {
 		hints = append(hints, "tab toggle")
 		if m.Limit == 0 {
 			hints = append(hints, "ctrl+a select all")
 		}
+	}
+	if m.previewFunc != nil {
+		hints = append(hints, "shift+↑/↓ preview scroll")
 	}
 	hints = append(hints, "esc quit", "ctrl+c abort")
 	return m.styles.Help.Render(strings.Join(hints, "  ·  "))
@@ -736,58 +842,80 @@ const (
 )
 
 // resize updates all sub-component dimensions to fit m.width × m.height,
-// accounting for the preview split when a preview function is set.
+// accounting for the preview split and border frames when enabled.
 func (m *Model) resize() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
 
-	const borderSize = 1 // 1 col (right split) or 1 row (bottom split) divider
+	// Fixed rows consumed by the input, title, and help line.
+	fixedRows := helpLines
+	if !m.hideInput {
+		fixedRows += inputLines
+	}
+	if m.listTitle != "" {
+		fixedRows++ // title row inside list pane
+	}
+
+	// Border frame sizes (0 when the respective border is disabled).
+	listBorderH := 0
+	if m.showListBorder {
+		listBorderH = m.styles.ListBorder.GetHorizontalFrameSize()
+	}
+	prevBorderH, prevBorderV := 0, 0
+	if m.showPreviewBorder {
+		prevBorderH = m.styles.PreviewBorder.GetHorizontalFrameSize()
+		prevBorderV = m.styles.PreviewBorder.GetVerticalFrameSize()
+	}
+
+	// Input always spans full terminal width.
+	if !m.hideInput {
+		m.input.SetWidth(m.width)
+	}
 
 	if m.previewFunc == nil {
-		vpH := m.height - inputLines - helpLines
-		if vpH < minVPLines {
-			vpH = minVPLines
-		}
+		vpH := max(minVPLines, m.height-fixedRows)
+		vpW := max(1, m.width-listBorderH)
 		m.vp.SetHeight(vpH)
-		m.vp.SetWidth(m.width)
-		m.input.SetWidth(m.width)
+		m.vp.SetWidth(vpW)
 		m.vp.SetContent(m.renderList())
 		return
 	}
 
-	m.input.SetWidth(m.width)
+	// One extra row above the preview viewport is used for the title+line-count bar.
+	const previewTitleRows = 1
 
 	switch m.previewPos {
 	case PreviewRight:
-		vpH := m.height - inputLines - helpLines
-		if vpH < minVPLines {
-			vpH = minVPLines
+		vpH := max(minVPLines, m.height-fixedRows)
+
+		// Horizontal allocation: list area | optional sep | preview area
+		listAreaW := m.width * (100 - m.previewSize) / 100
+		sepW := 1
+		if m.showPreviewBorder {
+			sepW = 0 // rounded border replaces the bar separator
 		}
-		listW := m.width * (100 - m.previewSize) / 100
-		prevW := m.width - listW - borderSize
-		if prevW < 8 {
-			prevW = 8
+		prevAreaW := m.width - listAreaW - sepW
+		if prevAreaW < 8 {
+			prevAreaW = 8
+			listAreaW = m.width - prevAreaW - sepW
 		}
+
+		// Viewport widths = area width minus their respective border frames.
 		m.vp.SetHeight(vpH)
-		m.vp.SetWidth(listW)
-		m.previewVP.SetHeight(vpH)
-		m.previewVP.SetWidth(prevW)
+		m.vp.SetWidth(max(1, listAreaW-listBorderH))
+		m.previewVP.SetHeight(max(minVPLines, vpH-previewTitleRows-prevBorderV))
+		m.previewVP.SetWidth(max(8, prevAreaW-prevBorderH))
 
 	case PreviewBottom:
-		totalVP := m.height - inputLines - helpLines - borderSize
-		listVPH := totalVP * (100 - m.previewSize) / 100
-		prevVPH := totalVP - listVPH
-		if listVPH < minVPLines {
-			listVPH = minVPLines
-		}
-		if prevVPH < minVPLines {
-			prevVPH = minVPLines
-		}
-		m.vp.SetHeight(listVPH)
-		m.vp.SetWidth(m.width)
-		m.previewVP.SetHeight(prevVPH)
-		m.previewVP.SetWidth(m.width)
+		totalH := max(2, m.height-fixedRows-1) // -1 for ─── separator row
+		listAreaH := totalH * (100 - m.previewSize) / 100
+		prevAreaH := totalH - listAreaH
+
+		m.vp.SetHeight(max(minVPLines, listAreaH))
+		m.vp.SetWidth(max(1, m.width-listBorderH))
+		m.previewVP.SetHeight(max(minVPLines, prevAreaH-previewTitleRows-prevBorderV))
+		m.previewVP.SetWidth(max(8, m.width-prevBorderH))
 	}
 
 	m.vp.SetContent(m.renderList())

@@ -7,17 +7,25 @@ import (
 
 // KeyMap holds all key bindings used by the Model.
 type KeyMap struct {
-	Down        key.Binding
-	Up          key.Binding
-	Home        key.Binding
-	End         key.Binding
-	Toggle      key.Binding // toggle selection (multi-select)
+	Down          key.Binding
+	Up            key.Binding
+	Home          key.Binding
+	End           key.Binding
+	Toggle        key.Binding // toggle selection (multi-select)
 	ToggleAndNext key.Binding // toggle + cursor down (tab)
 	ToggleAndPrev key.Binding // toggle + cursor up (shift+tab)
-	SelectAll   key.Binding
-	Submit      key.Binding
-	Quit        key.Binding
-	Abort       key.Binding
+	SelectAll     key.Binding
+	Submit        key.Binding
+	Quit          key.Binding
+	Abort         key.Binding
+
+	// Preview scroll keys — always active when preview is visible.
+	PreviewDown     key.Binding // scroll preview down one line
+	PreviewUp       key.Binding // scroll preview up one line
+	PreviewPageDown key.Binding
+	PreviewPageUp   key.Binding
+	PreviewTop      key.Binding
+	PreviewBottom   key.Binding
 
 	// CursorPrefix is the string rendered at the cursor line.
 	CursorPrefix string
@@ -33,6 +41,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Down, k.Up, k.Home, k.End},
 		{k.Toggle, k.ToggleAndNext, k.SelectAll},
+		{k.PreviewDown, k.PreviewUp, k.PreviewPageDown, k.PreviewPageUp, k.PreviewTop, k.PreviewBottom},
 		{k.Submit, k.Quit, k.Abort},
 	}
 }
@@ -45,8 +54,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("↓/ctrl+n", "down"),
 		),
 		Up: key.NewBinding(
-			key.WithKeys("up", "ctrl+k", "ctrl+p"),
-			key.WithHelp("↑/ctrl+p", "up"),
+			key.WithKeys("up", "ctrl+k"),
+			key.WithHelp("↑/ctrl+k", "up"),
 		),
 		Home: key.NewBinding(
 			key.WithKeys("home"),
@@ -83,6 +92,30 @@ func DefaultKeyMap() KeyMap {
 		Abort: key.NewBinding(
 			key.WithKeys("ctrl+c"),
 			key.WithHelp("ctrl+c", "abort"),
+		),
+		PreviewDown: key.NewBinding(
+			key.WithKeys("shift+down"),
+			key.WithHelp("shift+↓", "preview ↓"),
+		),
+		PreviewUp: key.NewBinding(
+			key.WithKeys("shift+up"),
+			key.WithHelp("shift+↑", "preview ↑"),
+		),
+		PreviewPageDown: key.NewBinding(
+			key.WithKeys("shift+pgdown"),
+			key.WithHelp("shift+pgdn", "preview page ↓"),
+		),
+		PreviewPageUp: key.NewBinding(
+			key.WithKeys("shift+pgup"),
+			key.WithHelp("shift+pgup", "preview page ↑"),
+		),
+		PreviewTop: key.NewBinding(
+			key.WithKeys("shift+home"),
+			key.WithHelp("shift+home", "preview top"),
+		),
+		PreviewBottom: key.NewBinding(
+			key.WithKeys("shift+end"),
+			key.WithHelp("shift+end", "preview bottom"),
 		),
 		CursorPrefix: "❯ ",
 	}

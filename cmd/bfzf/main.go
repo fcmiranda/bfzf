@@ -83,10 +83,14 @@ type config struct {
 	previewCmd      string
 	previewPosition string
 	previewSize     int
+	previewBorder   bool
 	noSort          bool
 	delimiter       string
 	nul             bool
 	jsonInput       bool
+	listTitle       string
+	listBorder      bool
+	noInput         bool
 }
 
 func parseFlags() config {
@@ -103,10 +107,14 @@ func parseFlags() config {
 	flag.StringVar(&cfg.previewCmd, "preview", "", "shell command for preview; use {} for full label, {-1} for last field, {n} for nth field")
 	flag.StringVar(&cfg.previewPosition, "preview-position", "right", "preview panel position: right (default) or bottom")
 	flag.IntVar(&cfg.previewSize, "preview-size", 40, "preview pane size in percent (10–90)")
+	flag.BoolVar(&cfg.previewBorder, "preview-border", false, "draw a box border around the preview pane")
 	flag.BoolVar(&cfg.noSort, "no-sort", false, "preserve input order (disable score-based sorting)")
 	flag.StringVar(&cfg.delimiter, "delimiter", "\n", "field delimiter for plain-text input")
 	flag.BoolVar(&cfg.nul, "0", false, "use NUL (\\x00) as delimiter")
 	flag.BoolVar(&cfg.jsonInput, "json", false, "parse stdin as JSON (array of strings or objects)")
+	flag.StringVar(&cfg.listTitle, "header", "", "title text shown above the list")
+	flag.BoolVar(&cfg.listBorder, "list-border", false, "draw a box border around the list pane")
+	flag.BoolVar(&cfg.noInput, "no-input", false, "hide the search input (navigation only)")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -427,11 +435,23 @@ func main() {
 	if cfg.noSort {
 		opts = append(opts, bfzf.WithNoSort())
 	}
+	if cfg.listTitle != "" {
+		opts = append(opts, bfzf.WithListTitle(cfg.listTitle))
+	}
+	if cfg.listBorder {
+		opts = append(opts, bfzf.WithListBorder())
+	}
+	if cfg.noInput {
+		opts = append(opts, bfzf.WithNoInput())
+	}
 	if cfg.previewCmd != "" {
 		opts = append(opts,
 			bfzf.WithPreview(makeShellPreview(cfg.previewCmd)),
 			bfzf.WithPreviewSize(cfg.previewSize),
 		)
+		if cfg.previewBorder {
+			opts = append(opts, bfzf.WithPreviewBorder())
+		}
 		switch cfg.previewPosition {
 		case "bottom":
 			opts = append(opts, bfzf.WithPreviewPosition(bfzf.PreviewBottom))

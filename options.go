@@ -2,6 +2,7 @@ package bfzf
 
 import (
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/lipgloss/v2"
 )
 
 // Option is a functional option for [New].
@@ -117,5 +118,61 @@ func WithPreviewSize(pct int) Option {
 func WithNoSort() Option {
 	return func(m *Model) {
 		m.sortResults = false
+	}
+}
+
+// WithListTitle sets a title string displayed above the list.
+// Pass an empty string to hide the title.
+func WithListTitle(title string) Option {
+	return func(m *Model) {
+		m.listTitle = title
+	}
+}
+
+// WithListBorder enables a lipgloss border around the list pane using the
+// ListBorder style. Call without argument to use the default rounded border.
+func WithListBorder() Option {
+	return func(m *Model) {
+		m.showListBorder = true
+		if m.styles.ListBorder.GetBorderStyle() == (lipgloss.Border{}) {
+			m.styles.ListBorder = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(0, 1)
+		}
+	}
+}
+
+// WithPreviewBorder enables a box border around the preview pane, replacing
+// the plain separator bar. Uses the PreviewBorder style.
+func WithPreviewBorder() Option {
+	return func(m *Model) {
+		m.showPreviewBorder = true
+		if m.styles.PreviewBorder.GetBorderStyle() == (lipgloss.Border{}) {
+			m.styles.PreviewBorder = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("240"))
+		}
+	}
+}
+
+// WithNoInput hides the search text input. Useful when using bfzf purely as a
+// navigable list without filtering.
+func WithNoInput() Option {
+	return func(m *Model) {
+		m.hideInput = true
+	}
+}
+
+// WithStyleFunc allows granular style overrides by applying a callback to the
+// current Styles value. This is preferred over WithStyles when only a few
+// style fields need changing.
+//
+//	bfzf.WithStyleFunc(func(s *bfzf.Styles) {
+//	    s.CursorText = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+//	})
+func WithStyleFunc(fn func(*Styles)) Option {
+	return func(m *Model) {
+		fn(&m.styles)
 	}
 }
