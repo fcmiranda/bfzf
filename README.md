@@ -100,6 +100,10 @@ EOF
 | `-list-border` | false | Draw a rounded border around the list pane; `-header` is embedded in the top border line |
 | `-no-input` | false | Hide search input (navigation only; `ctrl+f` toggles at runtime) |
 | `-input-border` | false | Draw a rounded border around the search input |
+| `-style` | `default` | Style preset: `default`, `full` (all borders), or `minimal` (no borders, no help) |
+| `-preview-width n` | 0 (use %) | Preview pane width in columns (overrides `-preview-size` when > 0; right layout) |
+| `-preview-height n` | 0 (use %) | Preview pane height in lines (overrides `-preview-size` when > 0; bottom layout) |
+| `-color spec` | — | Comma-separated `key:value` color overrides — see [Color spec](#color-spec) |
 
 ### Preview field selectors
 
@@ -292,5 +296,86 @@ CLI equivalent:
 ```bash
 ls | ./bfzf --header Files --list-border --input-border \
             --preview 'cat {}' --preview-border
+```
+
+### Style presets (`WithPreset`)
+
+Presets mirror fzf's `--style` option — one option turns on a full visual mode:
+
+| Preset | Description |
+|---|---|
+| `bfzf.PresetDefault` | No borders, plain separator bar (default) |
+| `bfzf.PresetFull` | Rounded border around list, input, and preview pane; titles embedded in top border line |
+| `bfzf.PresetMinimal` | No borders, help line hidden |
+
+```go
+m := bfzf.New(items,
+    bfzf.WithPreset(bfzf.PresetFull),
+    bfzf.WithListTitle("Files"),
+    bfzf.WithPreview(previewFn),
+)
+```
+
+CLI equivalent:
+```bash
+ls | ./bfzf --style full --header Files --preview 'cat {}'
+```
+
+### Explicit preview pane dimensions
+
+```go
+// Right-side preview with fixed 60-column width
+m := bfzf.New(items,
+    bfzf.WithPreview(previewFn),
+    bfzf.WithPreviewWidth(60),
+)
+
+// Bottom preview with fixed 20-line height
+m := bfzf.New(items,
+    bfzf.WithPreview(previewFn),
+    bfzf.WithPreviewPosition(bfzf.PreviewBottom),
+    bfzf.WithPreviewHeight(20),
+)
+```
+
+CLI equivalent:
+```bash
+ls | ./bfzf --preview 'cat {}' --preview-width 60
+ls | ./bfzf --preview 'cat {}' --preview-position bottom --preview-height 20
+```
+
+### Color spec
+
+`WithColor` / `--color` accepts a comma-separated list of `key:value` pairs.
+Color values can be ANSI 256 numbers (`"212"`), hex strings (`"#ff87af"`), or
+named 4-bit ANSI colors (`"red"`, `"bright-blue"`, etc.).
+
+| Key | Affects |
+|---|---|
+| `fg` | Item text foreground |
+| `fg+` | Cursor item foreground |
+| `bg` | Item text background |
+| `bg+` | Cursor item background |
+| `hl` | Fuzzy match highlight foreground |
+| `header` | Group header foreground |
+| `prompt` / `pointer` | Cursor indicator foreground |
+| `info` | Help text and preview line-count foreground |
+| `border` | All three border foregrounds at once |
+| `list-border` | List pane border foreground |
+| `preview-border` | Preview pane border foreground |
+| `input-border` | Search-input border foreground |
+| `scrollbar` | Preview scrollbar track foreground |
+| `scrollbar-thumb` | Preview scrollbar thumb foreground |
+
+```go
+m := bfzf.New(items,
+    bfzf.WithPreset(bfzf.PresetFull),
+    bfzf.WithColor("fg+:212,hl:220,border:99,preview-border:135"),
+)
+```
+
+CLI equivalent:
+```bash
+ls | ./bfzf --style full --color 'fg+:212,hl:220,border:99,preview-border:135' --preview 'cat {}'
 ```
 

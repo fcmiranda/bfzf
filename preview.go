@@ -65,5 +65,8 @@ func (m *Model) triggerPreview() tea.Cmd {
 // initPreview prepares the preview viewport; called from New() when a
 // preview function is provided.
 func initPreview() viewport.Model {
-	return viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
+	vp := viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
+	vp.MouseWheelEnabled = true
+	vp.MouseWheelDelta = 3
+	return vp
 }

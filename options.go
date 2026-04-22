@@ -203,3 +203,60 @@ func WithKeyMapFunc(fn func(*KeyMap)) Option {
 		fn(&m.keymap)
 	}
 }
+
+// WithPreset applies a named layout+style combination.
+//
+//   - [PresetDefault] — no borders, plain separator (current default)
+//   - [PresetFull]    — list border, input border, and preview border all enabled;
+//     titles are embedded in the top border line fzf-style
+//   - [PresetMinimal] — no borders, no help line
+func WithPreset(p Preset) Option {
+	return func(m *Model) {
+		switch p {
+		case PresetFull:
+			WithListBorder()(m)
+			WithInputBorder()(m)
+			WithPreviewBorder()(m)
+		case PresetMinimal:
+			m.showListBorder = false
+			m.showInputBorder = false
+			m.showPreviewBorder = false
+			m.styles.Help = lipgloss.Style{} // hide help line
+		}
+		// PresetDefault is the zero value — nothing to do.
+	}
+}
+
+// WithPreviewWidth sets an absolute column count for the preview pane.
+// When > 0 it overrides the [WithPreviewSize] percentage for the horizontal
+// dimension. Only meaningful for [PreviewRight] layout.
+func WithPreviewWidth(cols int) Option {
+	return func(m *Model) {
+		if cols > 0 {
+			m.previewWidth = cols
+		}
+	}
+}
+
+// WithPreviewHeight sets an absolute row count for the preview pane.
+// When > 0 it overrides the [WithPreviewSize] percentage for the vertical
+// dimension. Only meaningful for [PreviewBottom] layout.
+func WithPreviewHeight(lines int) Option {
+	return func(m *Model) {
+		if lines > 0 {
+			m.previewHeight = lines
+		}
+	}
+}
+
+// WithColor parses a comma-separated key:value color specification (similar to
+// fzf's --color flag) and applies it to the model's styles.
+//
+//	bfzf.WithColor("fg+:212,hl:220,border:99,preview-border:135")
+//
+// See [ApplyColorSpec] for the full list of supported keys and color formats.
+func WithColor(spec string) Option {
+	return func(m *Model) {
+		_ = ApplyColorSpec(spec, &m.styles)
+	}
+}

@@ -1,7 +1,33 @@
 package bfzf
 
 import (
+	"fmt"
+	"image/color"
+	"strconv"
+	"strings"
+
 	"charm.land/lipgloss/v2"
+)
+
+// ────────────────────────────────────────────────────────────────────────────
+// Preset
+// ────────────────────────────────────────────────────────────────────────────
+
+// Preset is a named layout+style combination similar to fzf's --style option.
+type Preset int
+
+const (
+	// PresetDefault is the default look: no borders, plain vertical separator
+	// between list and preview pane.
+	PresetDefault Preset = iota
+
+	// PresetFull enables list border, input border, and preview border so that
+	// every pane has a rounded box around it and titles are embedded in the top
+	// border line fzf-style.
+	PresetFull
+
+	// PresetMinimal strips every decoration (no help line, no borders, no title).
+	PresetMinimal
 )
 
 // Styles holds all lipgloss styles used to render the picker.
@@ -141,4 +167,126 @@ func DefaultStyles() Styles {
 		PreviewScrollbarThumb: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")),
 	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Color spec
+// ────────────────────────────────────────────────────────────────────────────
+
+// ApplyColorSpec parses a comma-separated key:value color specification
+// (similar to fzf's --color flag) and patches s in place.
+//
+// Supported keys:
+//
+//	fg             item text foreground
+//	fg+            cursor item foreground
+//	bg             item text background
+//	bg+            cursor item background
+//	hl             fuzzy match highlight foreground
+//	header         group header foreground
+//	prompt         cursor indicator foreground
+//	pointer        alias for prompt
+//	info           help / line-count foreground
+//	border         all three border foregrounds at once
+//	list-border    list pane border foreground
+//	preview-border preview pane border foreground
+//	input-border   search-input border foreground
+//	scrollbar      preview scrollbar track foreground
+//	scrollbar-thumb preview scrollbar thumb foreground
+//
+// Color values accept ANSI 256 numbers (e.g. "212"), hex strings ("#ff87d7"),
+// or named ANSI 4-bit names (e.g. "red", "bright-blue").
+//
+// Unknown keys are silently ignored so that forward-compatible specs work.
+func ApplyColorSpec(spec string, s *Styles) error {
+	for _, pair := range strings.Split(spec, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		idx := strings.IndexByte(pair, ':')
+		if idx < 0 {
+			return fmt.Errorf("bfzf: invalid color spec %q (missing ':')", pair)
+		}
+		key := strings.TrimSpace(pair[:idx])
+		val := strings.TrimSpace(pair[idx+1:])
+		c, err := parseColor(val)
+		if err != nil {
+			return fmt.Errorf("bfzf: invalid color value %q for key %q: %w", val, key, err)
+		}
+		switch key {
+		case "fg":
+			s.ItemText = s.ItemText.Foreground(c)
+		case "fg+":
+			s.CursorText = s.CursorText.Foreground(c)
+		case "bg":
+			s.ItemText = s.ItemText.Background(c)
+		case "bg+":
+			s.CursorText = s.CursorText.Background(c)
+		case "hl":
+			s.MatchHighlight = s.MatchHighlight.Foreground(c)
+		case "header":
+			s.Header = s.Header.Foreground(c)
+		case "prompt", "pointer":
+			s.CursorIndicator = s.CursorIndicator.Foreground(c)
+		case "info":
+			s.Help = s.Help.Foreground(c)
+			s.PreviewLineCount = s.PreviewLineCount.Foreground(c)
+		case "border":
+			s.ListBorder = s.ListBorder.BorderForeground(c)
+			s.PreviewBorder = s.PreviewBorder.BorderForeground(c)
+			s.InputBorder = s.InputBorder.BorderForeground(c)
+		case "list-border":
+			s.ListBorder = s.ListBorder.BorderForeground(c)
+		case "preview-border":
+			s.PreviewBorder = s.PreviewBorder.BorderForeground(c)
+		case "input-border":
+			s.InputBorder = s.InputBorder.BorderForeground(c)
+		case "scrollbar":
+			s.PreviewScrollbar = s.PreviewScrollbar.Foreground(c)
+		case "scrollbar-thumb":
+			s.PreviewScrollbarThumb = s.PreviewScrollbarThumb.Foreground(c)
+		// Unknown keys are silently ignored.
+		}
+	}
+	return nil
+}
+
+// parseColor converts a user-supplied color string to a [color.Color].
+// Accepts:
+//   - ANSI 256 integer strings ("212", "0"–"255")
+//   - Hex strings ("#ff87d7")
+//   - 4-bit ANSI names ("red", "bright-blue", "black", …)
+func parseColor(s string) (color.Color, error) {
+	if strings.HasPrefix(s, "#") {
+		c := lipgloss.Color(s)
+		return c, nil
+	}
+	if _, err := strconv.Atoi(s); err == nil {
+		c := lipgloss.Color(s)
+		return c, nil
+	}
+	// Named 4-bit colors.
+	named := map[string]color.Color{
+		"black":          lipgloss.Black,
+		"red":            lipgloss.Red,
+		"green":          lipgloss.Green,
+		"yellow":         lipgloss.Yellow,
+		"blue":           lipgloss.Blue,
+		"magenta":        lipgloss.Magenta,
+		"cyan":           lipgloss.Cyan,
+		"white":          lipgloss.White,
+		"bright-black":   lipgloss.BrightBlack,
+		"bright-red":     lipgloss.BrightRed,
+		"bright-green":   lipgloss.BrightGreen,
+		"bright-yellow":  lipgloss.BrightYellow,
+		"bright-blue":    lipgloss.BrightBlue,
+		"bright-magenta": lipgloss.BrightMagenta,
+		"bright-cyan":    lipgloss.BrightCyan,
+		"bright-white":   lipgloss.BrightWhite,
+	}
+	if c, ok := named[strings.ToLower(s)]; ok {
+		return c, nil
+	}
+	return nil, fmt.Errorf("unknown color %q", s)
 }

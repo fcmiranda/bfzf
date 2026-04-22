@@ -92,6 +92,10 @@ type config struct {
 	listBorder      bool
 	noInput         bool
 	inputBorder     bool
+	preset          string
+	previewWidth    int
+	previewHeight   int
+	colorSpec       string
 }
 
 func parseFlags() config {
@@ -117,6 +121,10 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.listBorder, "list-border", false, "draw a box border around the list pane")
 	flag.BoolVar(&cfg.noInput, "no-input", false, "hide the search input (navigation only)")
 	flag.BoolVar(&cfg.inputBorder, "input-border", false, "draw a box border around the search input")
+	flag.StringVar(&cfg.preset, "style", "default", "style preset: default, full, or minimal")
+	flag.IntVar(&cfg.previewWidth, "preview-width", 0, "preview pane width in columns (0 = use --preview-size %)")
+	flag.IntVar(&cfg.previewHeight, "preview-height", 0, "preview pane height in lines (0 = use --preview-size %)")
+	flag.StringVar(&cfg.colorSpec, "color", "", `color spec: key:value[,key:value…] (e.g. "fg+:212,border:99")`)
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -448,6 +456,21 @@ func main() {
 	}
 	if cfg.inputBorder {
 		opts = append(opts, bfzf.WithInputBorder())
+	}
+	switch cfg.preset {
+	case "full":
+		opts = append(opts, bfzf.WithPreset(bfzf.PresetFull))
+	case "minimal":
+		opts = append(opts, bfzf.WithPreset(bfzf.PresetMinimal))
+	}
+	if cfg.previewWidth > 0 {
+		opts = append(opts, bfzf.WithPreviewWidth(cfg.previewWidth))
+	}
+	if cfg.previewHeight > 0 {
+		opts = append(opts, bfzf.WithPreviewHeight(cfg.previewHeight))
+	}
+	if cfg.colorSpec != "" {
+		opts = append(opts, bfzf.WithColor(cfg.colorSpec))
 	}
 	if cfg.previewCmd != "" {
 		opts = append(opts,

@@ -190,6 +190,15 @@ type Model struct {
 
 	// sortResults controls whether fuzzy matches are sorted by score (default: true).
 	sortResults bool
+
+	// ── Preview explicit sizing ───────────────────────────────────────────────
+
+	// previewWidth is an absolute column count for the preview pane.
+	// When > 0 it overrides previewSize percentage.
+	previewWidth int
+	// previewHeight is an absolute row count for the preview pane.
+	// When > 0 it overrides previewSize percentage.
+	previewHeight int
 }
 
 // New creates a new Model with the provided items and options.
@@ -244,6 +253,12 @@ func New(items []Item, opts ...Option) Model {
 	// Sync input fields after options may have changed them.
 	m.input.Placeholder = m.Placeholder
 	m.input.Prompt = m.Prompt
+
+	// Focus the textinput so it is ready to receive keystrokes from the first
+	// Update call. textinput.New() creates models with focus=false; calling
+	// Focus() here (pointer receiver on addressable local var) sets the flag on
+	// the model that New() returns. Init() still sends the cursor-blink cmd.
+	_ = m.input.Focus()
 
 	// Compute the initial (unfiltered) visible set.
 	m.buildVisibleAll()
@@ -340,27 +355,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case matchesAny(msg, m.keymap.End):
 				m.moveCursorToEnd()
 
-			case matchesAny(msg, m.keymap.Toggle):
-				if m.Limit != 1 {
-					m.toggleSelection()
-				}
+			// Gated cases: only consume the key when the action is active.
+			// When the condition is false the key falls through to the input.
+			case matchesAny(msg, m.keymap.Toggle) && m.Limit != 1:
+				m.toggleSelection()
 
-			case matchesAny(msg, m.keymap.ToggleAndNext):
-				if m.Limit != 1 {
-					m.toggleSelection()
-					m.moveCursorDown()
-				}
+			case matchesAny(msg, m.keymap.ToggleAndNext) && m.Limit != 1:
+				m.toggleSelection()
+				m.moveCursorDown()
 
-			case matchesAny(msg, m.keymap.ToggleAndPrev):
-				if m.Limit != 1 {
-					m.toggleSelection()
-					m.moveCursorUp()
-				}
+			case matchesAny(msg, m.keymap.ToggleAndPrev) && m.Limit != 1:
+				m.toggleSelection()
+				m.moveCursorUp()
 
-			case matchesAny(msg, m.keymap.SelectAll):
-				if m.Limit == 0 {
-					m.selectAll()
-				}
+			case matchesAny(msg, m.keymap.SelectAll) && m.Limit == 0:
+				m.selectAll()
 
 			default:
 				if !m.hideInput {
@@ -375,6 +384,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		}
+	}
+
+	// Mouse wheel: scroll the preview viewport.
+	if mw, ok := msg.(tea.MouseWheelMsg); ok && m.previewFunc != nil {
+		switch mw.Mouse().Button {
+		case tea.MouseWheelUp:
+			m.previewVP.SetYOffset(m.previewVP.YOffset() - m.previewVP.MouseWheelDelta)
+		case tea.MouseWheelDown:
+			m.previewVP.SetYOffset(m.previewVP.YOffset() + m.previewVP.MouseWheelDelta)
 		}
 	}
 
@@ -413,7 +432,10 @@ func (m Model) View() tea.View {
 	if !m.ready {
 		return tea.NewView("")
 	}
-	return tea.NewView(m.render())
+	v := tea.NewView(m.render())
+	// Enable cell-motion mouse tracking so scroll-wheel events are reported.
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -997,17 +1019,22 @@ func (m *Model) resize() {
 	case PreviewRight:
 		vpH := max(minVPLines, m.height-fixedRows)
 
-		// Horizontal allocation: list area | optional sep | preview area
-		listAreaW := m.width * (100 - m.previewSize) / 100
+		// Horizontal allocation: list area | optional sep | preview area.
+		// Explicit previewWidth overrides the percentage if set.
 		sepW := 1
 		if m.showPreviewBorder {
 			sepW = 0 // rounded border replaces the bar separator
 		}
-		prevAreaW := m.width - listAreaW - sepW
+		var prevAreaW int
+		if m.previewWidth > 0 {
+			prevAreaW = m.previewWidth
+		} else {
+			prevAreaW = m.width * m.previewSize / 100
+		}
 		if prevAreaW < 8 {
 			prevAreaW = 8
-			listAreaW = m.width - prevAreaW - sepW
 		}
+		listAreaW := max(1, m.width-prevAreaW-sepW)
 
 		// Viewport widths = area width minus their respective border frames.
 		m.vp.SetHeight(vpH)
@@ -1017,10 +1044,20 @@ func (m *Model) resize() {
 
 	case PreviewBottom:
 		totalH := max(2, m.height-fixedRows-1) // -1 for ─── separator row
-		listAreaH := totalH * (100 - m.previewSize) / 100
-		prevAreaH := totalH - listAreaH
 
-		m.vp.SetHeight(max(minVPLines, listAreaH))
+		// Explicit previewHeight overrides the percentage if set.
+		var prevAreaH int
+		if m.previewHeight > 0 {
+			prevAreaH = m.previewHeight
+		} else {
+			prevAreaH = totalH * m.previewSize / 100
+		}
+		if prevAreaH < 2 {
+			prevAreaH = 2
+		}
+		listAreaH := max(minVPLines, totalH-prevAreaH)
+
+		m.vp.SetHeight(listAreaH)
 		m.vp.SetWidth(max(1, m.width-listBorderH))
 		m.previewVP.SetHeight(max(minVPLines, prevAreaH-previewTitleH-prevBorderV))
 		m.previewVP.SetWidth(max(8, m.width-prevBorderH))
