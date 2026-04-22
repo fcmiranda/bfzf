@@ -27,6 +27,10 @@ type KeyMap struct {
 	PreviewTop      key.Binding
 	PreviewBottom   key.Binding
 
+	// ToggleInput toggles the search text input on/off at runtime.
+	// When hidden, the current filter is cleared.
+	ToggleInput key.Binding
+
 	// CursorPrefix is the string rendered at the cursor line.
 	CursorPrefix string
 }
@@ -42,7 +46,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Down, k.Up, k.Home, k.End},
 		{k.Toggle, k.ToggleAndNext, k.SelectAll},
 		{k.PreviewDown, k.PreviewUp, k.PreviewPageDown, k.PreviewPageUp, k.PreviewTop, k.PreviewBottom},
-		{k.Submit, k.Quit, k.Abort},
+		{k.ToggleInput, k.Submit, k.Quit, k.Abort},
 	}
 }
 
@@ -116,6 +120,10 @@ func DefaultKeyMap() KeyMap {
 		PreviewBottom: key.NewBinding(
 			key.WithKeys("shift+end"),
 			key.WithHelp("shift+end", "preview bottom"),
+		),
+		ToggleInput: key.NewBinding(
+			key.WithKeys("ctrl+f"),
+			key.WithHelp("ctrl+f", "toggle search input"),
 		),
 		CursorPrefix: "❯ ",
 	}

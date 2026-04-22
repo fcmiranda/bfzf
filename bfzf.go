@@ -32,6 +32,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -182,6 +183,8 @@ type Model struct {
 
 	// hideInput hides the search text input (list-only mode).
 	hideInput bool
+	// showInputBorder draws a border around the search text input.
+	showInputBorder bool
 
 	// ── Sort ─────────────────────────────────────────────────────────────────
 
@@ -303,6 +306,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.previewVP.GotoTop()
 		case matchesAny(msg, m.keymap.PreviewBottom):
 			m.previewVP.GotoBottom()
+
+		case matchesAny(msg, m.keymap.ToggleInput):
+			m.hideInput = !m.hideInput
+			if m.hideInput {
+				m.input.SetValue("")
+				m.updateFilter()
+			}
+			m.resize()
 
 		// List navigation and selection.
 		default:
@@ -652,7 +663,11 @@ func (m *Model) render() string {
 
 	var inputView string
 	if !m.hideInput {
-		inputView = m.input.View()
+		if m.showInputBorder {
+			inputView = m.styles.InputBorder.Render(m.input.View())
+		} else {
+			inputView = m.input.View()
+		}
 	}
 
 	if m.previewFunc == nil {
@@ -683,22 +698,26 @@ func (m *Model) render() string {
 	return join(inputView, listPane, helpStr)
 }
 
-// renderListPane builds the list side: optional title + viewport, with optional border.
-// The search input is NOT included here; render() places it above any split.
+// renderListPane builds the list side: optional titled border + viewport.
+// When a border is enabled, the listTitle is embedded in the top border line
+// (fzf-style). Without a border it appears as a separate row above the viewport.
 func (m *Model) renderListPane() string {
-	var parts []string
-	if m.listTitle != "" {
-		parts = append(parts, m.styles.ListTitle.Render(m.listTitle))
-	}
-	parts = append(parts, m.vp.View())
-	content := strings.Join(parts, "\n")
+	vpView := m.vp.View()
 	if m.showListBorder {
-		return m.styles.ListBorder.Render(content)
+		// Title goes in the top border line (fzf-style).
+		return titledBorder(vpView, m.listTitle, "", m.styles.ListBorder)
+	}
+	content := vpView
+	if m.listTitle != "" {
+		content = m.styles.ListTitle.Render(m.listTitle) + "\n" + vpView
 	}
 	return content
 }
 
-// renderPreviewPane builds the preview panel: title bar w/ line count + viewport content.
+// renderPreviewPane builds the preview panel.
+// When a preview border is enabled, the item title and line count are
+// embedded in the top border line (fzf-style). Without a border, a title
+// row above the viewport is used.
 func (m *Model) renderPreviewPane() string {
 	var titleStr string
 	if m.cursorPos >= 0 && m.cursorPos < len(m.selectableIdxs) {
@@ -709,25 +728,23 @@ func (m *Model) renderPreviewPane() string {
 	// Line count indicator: currentLine/totalLines
 	lineCount := m.renderPreviewLineCount()
 
-	// Title row: title on left, line count on right.
+	vpView := m.previewVP.View()
+	vpView = m.renderPreviewWithScrollbar(vpView)
+
+	if m.showPreviewBorder {
+		// Title + line count both go in the top border line.
+		return titledBorder(vpView, titleStr, lineCount, m.styles.PreviewBorder)
+	}
+
+	// No border: title row + line count above content.
 	var titleRow string
 	if titleStr != "" || lineCount != "" {
 		titleRow = titleStr + lineCount
 	}
-
-	vpView := m.previewVP.View()
-
-	var content string
 	if titleRow != "" {
-		content = strings.Join([]string{titleRow, vpView}, "\n")
-	} else {
-		content = vpView
+		return titleRow + "\n" + vpView
 	}
-
-	if m.showPreviewBorder {
-		return m.styles.PreviewBorder.Render(content)
-	}
-	return content
+	return vpView
 }
 
 // renderPreviewLineCount returns the "n/total" scroll indicator.
@@ -740,7 +757,84 @@ func (m *Model) renderPreviewLineCount() string {
 	if current > total {
 		current = total
 	}
-	return m.styles.PreviewLineCount.Render(fmt.Sprintf(" %d/%d", current, total))
+	return m.styles.PreviewLineCount.Render(fmt.Sprintf("%d/%d", current, total))
+}
+
+// renderPreviewWithScrollbar overlays a 1-char scrollbar on the rightmost
+// column of the viewport view. Returns vpView unchanged when all content fits
+// without scrolling.
+func (m *Model) renderPreviewWithScrollbar(vpView string) string {
+	total := m.previewVP.TotalLineCount()
+	vpH := m.previewVP.Height()
+	yOffset := m.previewVP.YOffset()
+	if total <= vpH || vpH == 0 {
+		return vpView
+	}
+
+	thumbSize := max(1, vpH*vpH/total)
+	maxOffset := total - vpH
+	thumbPos := 0
+	if maxOffset > 0 {
+		thumbPos = yOffset * (vpH - thumbSize) / maxOffset
+	}
+
+	vpLines := strings.Split(vpView, "\n")
+	for i, line := range vpLines {
+		var sc string
+		if i >= thumbPos && i < thumbPos+thumbSize {
+			sc = m.styles.PreviewScrollbarThumb.Render("┃")
+		} else {
+			sc = m.styles.PreviewScrollbar.Render("│")
+		}
+		lineW := lipgloss.Width(line)
+		if lineW > 0 {
+			vpLines[i] = ansi.Truncate(line, lineW-1, "") + sc
+		} else {
+			vpLines[i] = sc
+		}
+	}
+	return strings.Join(vpLines, "\n")
+}
+
+// titledBorder renders content wrapped in the given lipgloss border, embedding
+// leftTitle on the left side of the top border and rightTitle on the right
+// side (fzf-style). Empty titles are skipped.
+//
+//	╭─ leftTitle ───────────── rightTitle ─╮
+//	│  content                             │
+//	╰──────────────────────────────────────╯
+func titledBorder(content, leftTitle, rightTitle string, style lipgloss.Style) string {
+	rendered := style.Render(content)
+	if leftTitle == "" && rightTitle == "" {
+		return rendered
+	}
+	lines := strings.SplitN(rendered, "\n", 2)
+	if len(lines) < 2 {
+		return rendered
+	}
+	outerW := lipgloss.Width(lines[0])
+	b := style.GetBorderStyle()
+	lineStyle := lipgloss.NewStyle().Foreground(style.GetBorderTopForeground())
+
+	// Inner fill = outer width minus two corner characters.
+	innerW := outerW - 2
+
+	// Build left segment: "─ leftTitle ─"
+	leftSeg := ""
+	if leftTitle != "" {
+		leftSeg = b.Top + " " + leftTitle + " " + b.Top
+	}
+	// Build right segment: "─ rightTitle ─"
+	rightSeg := ""
+	if rightTitle != "" {
+		rightSeg = b.Top + " " + rightTitle + " " + b.Top
+	}
+	leftW := lipgloss.Width(leftSeg)
+	rightW := lipgloss.Width(rightSeg)
+	fillW := max(0, innerW-leftW-rightW)
+
+	newTop := lineStyle.Render(b.TopLeft + leftSeg + strings.Repeat(b.Top, fillW) + rightSeg + b.TopRight)
+	return newTop + "\n" + lines[1]
 }
 
 // renderList builds the string content for the viewport.
@@ -852,9 +946,14 @@ func (m *Model) resize() {
 	fixedRows := helpLines
 	if !m.hideInput {
 		fixedRows += inputLines
+		if m.showInputBorder {
+			fixedRows += m.styles.InputBorder.GetVerticalFrameSize()
+		}
 	}
-	if m.listTitle != "" {
-		fixedRows++ // title row inside list pane
+	// List title only takes a row when there is no list border (with a border
+	// the title is embedded in the top border line, not a separate row).
+	if m.listTitle != "" && !m.showListBorder {
+		fixedRows++
 	}
 
 	// Border frame sizes (0 when the respective border is disabled).
@@ -868,9 +967,13 @@ func (m *Model) resize() {
 		prevBorderV = m.styles.PreviewBorder.GetVerticalFrameSize()
 	}
 
-	// Input always spans full terminal width.
+	// Input width accounts for optional input border.
 	if !m.hideInput {
-		m.input.SetWidth(m.width)
+		inputW := m.width
+		if m.showInputBorder {
+			inputW -= m.styles.InputBorder.GetHorizontalFrameSize()
+		}
+		m.input.SetWidth(inputW)
 	}
 
 	if m.previewFunc == nil {
@@ -882,8 +985,13 @@ func (m *Model) resize() {
 		return
 	}
 
-	// One extra row above the preview viewport is used for the title+line-count bar.
-	const previewTitleRows = 1
+	// When the preview border is enabled, the title+line-count row is embedded
+	// in the border top line (not a content row), so we don't need to deduct it.
+	// Without a preview border, we still need one row for the title row.
+	previewTitleH := 1
+	if m.showPreviewBorder {
+		previewTitleH = 0
+	}
 
 	switch m.previewPos {
 	case PreviewRight:
@@ -904,7 +1012,7 @@ func (m *Model) resize() {
 		// Viewport widths = area width minus their respective border frames.
 		m.vp.SetHeight(vpH)
 		m.vp.SetWidth(max(1, listAreaW-listBorderH))
-		m.previewVP.SetHeight(max(minVPLines, vpH-previewTitleRows-prevBorderV))
+		m.previewVP.SetHeight(max(minVPLines, vpH-previewTitleH-prevBorderV))
 		m.previewVP.SetWidth(max(8, prevAreaW-prevBorderH))
 
 	case PreviewBottom:
@@ -914,7 +1022,7 @@ func (m *Model) resize() {
 
 		m.vp.SetHeight(max(minVPLines, listAreaH))
 		m.vp.SetWidth(max(1, m.width-listBorderH))
-		m.previewVP.SetHeight(max(minVPLines, prevAreaH-previewTitleRows-prevBorderV))
+		m.previewVP.SetHeight(max(minVPLines, prevAreaH-previewTitleH-prevBorderV))
 		m.previewVP.SetWidth(max(8, m.width-prevBorderH))
 	}
 

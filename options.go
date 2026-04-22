@@ -164,6 +164,20 @@ func WithNoInput() Option {
 	}
 }
 
+// WithInputBorder enables a lipgloss border around the search text input using
+// the InputBorder style. Call without argument to use the default rounded border.
+func WithInputBorder() Option {
+	return func(m *Model) {
+		m.showInputBorder = true
+		if m.styles.InputBorder.GetBorderStyle() == (lipgloss.Border{}) {
+			m.styles.InputBorder = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(0, 1)
+		}
+	}
+}
+
 // WithStyleFunc allows granular style overrides by applying a callback to the
 // current Styles value. This is preferred over WithStyles when only a few
 // style fields need changing.
@@ -174,5 +188,18 @@ func WithNoInput() Option {
 func WithStyleFunc(fn func(*Styles)) Option {
 	return func(m *Model) {
 		fn(&m.styles)
+	}
+}
+
+// WithKeyMapFunc allows granular key binding overrides by applying a callback
+// to the current KeyMap value. This is preferred over WithKeyMap when only a
+// few bindings need changing.
+//
+//	bfzf.WithKeyMapFunc(func(km *bfzf.KeyMap) {
+//	    km.Quit = key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit"))
+//	})
+func WithKeyMapFunc(fn func(*KeyMap)) Option {
+	return func(m *Model) {
+		fn(&m.keymap)
 	}
 }

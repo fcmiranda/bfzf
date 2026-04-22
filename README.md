@@ -91,10 +91,15 @@ EOF
 | `-preview cmd` | — | Shell command for preview; supports `{}`, `{-1}`, `{n}` |
 | `-preview-position` | `right` | `right` or `bottom` |
 | `-preview-size n` | 40 | Preview pane size in percent (10–90) |
+| `-preview-border` | false | Draw a rounded border around the preview pane; title + `n/total` counter are embedded in the top border line |
 | `-no-sort` | false | Preserve input order (disable score sorting) |
 | `-delimiter str` | `\n` | Line delimiter for plain-text input |
 | `-0` | false | Use NUL (`\x00`) as delimiter |
 | `-json` | false | Parse stdin as JSON array |
+| `-header str` | — | Title shown in the top border line of the list pane |
+| `-list-border` | false | Draw a rounded border around the list pane; `-header` is embedded in the top border line |
+| `-no-input` | false | Hide search input (navigation only; `ctrl+f` toggles at runtime) |
+| `-input-border` | false | Draw a rounded border around the search input |
 
 ### Preview field selectors
 
@@ -229,13 +234,63 @@ m := bfzf.New(items)
 
 ### Key bindings
 
-| Key | Action |
-|---|---|
-| `↑` / `↓` | Navigate |
-| `Enter` | Confirm selection |
-| `Tab` / `Shift+Tab` | Toggle item (multi-select) |
-| `Ctrl+A` | Select all visible (unlimited multi-select) |
-| `Esc` | Quit without selecting |
-| `Ctrl+C` | Abort |
-| `Home` / `End` | Jump to start / end |
+| Key | Action | Overridable via `WithKeyMapFunc` |
+|---|---|---|
+| `↑` / `↓` | Navigate | `km.Up` / `km.Down` |
+| `Enter` | Confirm selection | `km.Submit` |
+| `Tab` / `Shift+Tab` | Toggle item (multi-select) | `km.ToggleAndNext` / `km.ToggleAndPrev` |
+| `Ctrl+A` | Select all visible (unlimited multi-select) | `km.SelectAll` |
+| `Esc` | Quit without selecting | `km.Quit` |
+| `Ctrl+C` | Abort | `km.Abort` |
+| `Home` / `End` | Jump to start / end | `km.Home` / `km.End` |
+| `Shift+↑` / `Shift+↓` | Scroll preview up / down | `km.PreviewUp` / `km.PreviewDown` |
+| `Shift+PgUp` / `Shift+PgDn` | Scroll preview by page | `km.PreviewPageUp` / `km.PreviewPageDown` |
+| `Shift+Home` / `Shift+End` | Jump to preview top / bottom | `km.PreviewTop` / `km.PreviewBottom` |
+| `Ctrl+F` | Toggle search input on/off (clears filter when hidden) | `km.ToggleInput` |
+
+### Theming / Style overrides
+
+```go
+m := bfzf.New(items,
+    bfzf.WithStyleFunc(func(s *bfzf.Styles) {
+        s.CursorText = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
+        s.ListBorder = lipgloss.NewStyle().
+            Border(lipgloss.RoundedBorder()).
+            BorderForeground(lipgloss.Color("99"))
+    }),
+)
+```
+
+### Key binding overrides
+
+```go
+import "charm.land/bubbles/v2/key"
+
+m := bfzf.New(items,
+    bfzf.WithKeyMapFunc(func(km *bfzf.KeyMap) {
+        // Change quit key from Esc to q
+        km.Quit = key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit"))
+        // Change toggle-input from ctrl+f to ctrl+h
+        km.ToggleInput = key.NewBinding(key.WithKeys("ctrl+h"), key.WithHelp("ctrl+h", "toggle input"))
+    }),
+)
+```
+
+### Bordered input + list pane with title
+
+```go
+m := bfzf.New(items,
+    bfzf.WithListTitle("Files"),
+    bfzf.WithListBorder(),   // title is embedded in the top border line
+    bfzf.WithInputBorder(),
+    bfzf.WithPreview(previewFn),
+    bfzf.WithPreviewBorder(), // item label + scroll counter in top border line
+)
+```
+
+CLI equivalent:
+```bash
+ls | ./bfzf --header Files --list-border --input-border \
+            --preview 'cat {}' --preview-border
+```
 

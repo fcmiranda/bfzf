@@ -91,6 +91,7 @@ type config struct {
 	listTitle       string
 	listBorder      bool
 	noInput         bool
+	inputBorder     bool
 }
 
 func parseFlags() config {
@@ -115,6 +116,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.listTitle, "header", "", "title text shown above the list")
 	flag.BoolVar(&cfg.listBorder, "list-border", false, "draw a box border around the list pane")
 	flag.BoolVar(&cfg.noInput, "no-input", false, "hide the search input (navigation only)")
+	flag.BoolVar(&cfg.inputBorder, "input-border", false, "draw a box border around the search input")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -443,6 +445,9 @@ func main() {
 	}
 	if cfg.noInput {
 		opts = append(opts, bfzf.WithNoInput())
+	}
+	if cfg.inputBorder {
+		opts = append(opts, bfzf.WithInputBorder())
 	}
 	if cfg.previewCmd != "" {
 		opts = append(opts,

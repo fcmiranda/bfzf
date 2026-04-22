@@ -58,6 +58,18 @@ type Styles struct {
 
 	// Input styles the text-input search box.
 	Input lipgloss.Style
+
+	// InputBorder is applied as a lipgloss border around the text-input search box.
+	// Leave zero-value to disable the input border.
+	InputBorder lipgloss.Style
+
+	// PreviewScrollbar styles the scrollbar track character (│) rendered on the
+	// right edge of the preview viewport when content overflows.
+	PreviewScrollbar lipgloss.Style
+
+	// PreviewScrollbarThumb styles the scrollbar thumb character (┃) rendered on
+	// the right edge of the preview viewport.
+	PreviewScrollbarThumb lipgloss.Style
 }
 
 // DefaultStyles returns an opinionated dark-terminal style set.
@@ -120,5 +132,13 @@ func DefaultStyles() Styles {
 			PaddingLeft(1),
 
 		Input: lipgloss.Style{}, // zero = no extra styling by default
+
+		InputBorder: lipgloss.Style{}, // zero = no border by default
+
+		PreviewScrollbar: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("238")),
+
+		PreviewScrollbarThumb: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")),
 	}
 }
