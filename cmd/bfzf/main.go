@@ -1,0 +1,445 @@
+// Command bfzf is a CLI fuzzy finder built on Bubble Tea / Bubbles / Lip Gloss.
+//
+// Usage:
+//
+//	bfzf [flags] [item ...]
+//	ls | bfzf [flags]
+//	cat items.json | bfzf --json
+//
+// Items are read from positional arguments, stdin (one per line), or a JSON
+// file. The TUI renders on stderr; selected item(s) are printed to stdout so
+// the tool composes naturally in shell pipelines:
+//
+//	ls | bfzf | xargs cat
+//
+// Preview field selectors (fzf-compatible):
+//
+//	{}    full item label
+//	{n}   nth whitespace-split field (1-based, e.g. {1} = first word)
+//	{-1}  last whitespace-split field
+//	{-n}  nth-from-last field
+//
+// JSON input format:
+//
+//	Simple:  ["item1", "item2", ...]
+//	Rich:    [{"label":"item", "header":true, "spinner":true}, ...]
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/fecavmi/bfzf"
+)
+
+// ────────────────────────────────────────────────────────────────────────────
+// CLI-specific item types
+// ────────────────────────────────────────────────────────────────────────────
+
+// cliSpinnerItem is a simple item with an animated spinner.
+type cliSpinnerItem struct {
+	text string
+	s    spinner.Model
+}
+
+func (c cliSpinnerItem) Label() string          { return c.text }
+func (c cliSpinnerItem) FilterValue() string    { return c.text }
+func (c cliSpinnerItem) IsHeader() bool         { return false }
+func (c cliSpinnerItem) Spinner() spinner.Model { return c.s }
+
+// newCLISpinnerItem creates a spinner-annotated item with an orange Dot spinner.
+func newCLISpinnerItem(text string) cliSpinnerItem {
+	return cliSpinnerItem{
+		text: text,
+		s: spinner.New(
+			spinner.WithSpinner(spinner.Dot),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("214"))),
+		),
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Flag definitions
+// ────────────────────────────────────────────────────────────────────────────
+
+type config struct {
+	multi           bool
+	limit           int
+	prompt          string
+	placeholder     string
+	height          int
+	groupPrefix     string
+	spinnerPrefix   string
+	previewCmd      string
+	previewPosition string
+	previewSize     int
+	noSort          bool
+	delimiter       string
+	nul             bool
+	jsonInput       bool
+}
+
+func parseFlags() config {
+	cfg := config{}
+
+	flag.BoolVar(&cfg.multi, "m", false, "enable unlimited multi-select")
+	flag.BoolVar(&cfg.multi, "multi", false, "enable unlimited multi-select")
+	flag.IntVar(&cfg.limit, "limit", 1, "max selections (overridden by -multi)")
+	flag.StringVar(&cfg.prompt, "prompt", "❯ ", "search prompt")
+	flag.StringVar(&cfg.placeholder, "placeholder", "Filter…", "placeholder text")
+	flag.IntVar(&cfg.height, "height", 0, "terminal lines to use (0 = full screen)")
+	flag.StringVar(&cfg.groupPrefix, "group-prefix", "", "lines with this prefix become group headers (prefix stripped)")
+	flag.StringVar(&cfg.spinnerPrefix, "spinner-prefix", "", "lines with this prefix get an animated spinner (prefix stripped)")
+	flag.StringVar(&cfg.previewCmd, "preview", "", "shell command for preview; use {} for full label, {-1} for last field, {n} for nth field")
+	flag.StringVar(&cfg.previewPosition, "preview-position", "right", "preview panel position: right (default) or bottom")
+	flag.IntVar(&cfg.previewSize, "preview-size", 40, "preview pane size in percent (10–90)")
+	flag.BoolVar(&cfg.noSort, "no-sort", false, "preserve input order (disable score-based sorting)")
+	flag.StringVar(&cfg.delimiter, "delimiter", "\n", "field delimiter for plain-text input")
+	flag.BoolVar(&cfg.nul, "0", false, "use NUL (\\x00) as delimiter")
+	flag.BoolVar(&cfg.jsonInput, "json", false, "parse stdin as JSON (array of strings or objects)")
+
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Fuzzy finder with groups, spinners, preview and JSON input.")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Flags:")
+		flag.PrintDefaults()
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Preview field selectors:")
+		fmt.Fprintln(os.Stderr, "  {}    full item label")
+		fmt.Fprintln(os.Stderr, "  {-1}  last whitespace-split field  (e.g. filename from eza/ls -l)")
+		fmt.Fprintln(os.Stderr, "  {1}   first field")
+		fmt.Fprintln(os.Stderr, "  {n}   nth field (1-based)")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Examples:")
+		fmt.Fprintln(os.Stderr, `  ls -l | bfzf --preview 'stat {-1}'   # {-1} = filename column`)
+		fmt.Fprintln(os.Stderr, `  ls    | bfzf --preview 'cat {}'`)
+		fmt.Fprintln(os.Stderr, `  printf '#Fruits\nApple\nBanana' | bfzf --group-prefix '#'`)
+		fmt.Fprintln(os.Stderr, `  printf '@Loading\nReady' | bfzf --spinner-prefix '@'`)
+		fmt.Fprintln(os.Stderr, `  cat items.json | bfzf --json`)
+		fmt.Fprintln(os.Stderr, `  bfzf -m item1 item2 item3`)
+	}
+
+	flag.Parse()
+	return cfg
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Input reading
+// ────────────────────────────────────────────────────────────────────────────
+
+// readLines reads lines from r split by delimiter.
+func readLines(r *os.File, delimiter string) ([]string, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1 MiB max line
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		if i := strings.Index(string(data), delimiter); i >= 0 {
+			return i + len(delimiter), data[:i], nil
+		}
+		if atEOF {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	})
+	var lines []string
+	for scanner.Scan() {
+		if line := scanner.Text(); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines, scanner.Err()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// JSON input
+// ────────────────────────────────────────────────────────────────────────────
+
+// jsonEntry is the rich object format for JSON input.
+// All fields are optional; "label" is required for rich entries.
+//
+//	{"label": "Apple"}
+//	{"label": "── Fruits", "header": true}
+//	{"label": "Building…", "spinner": true}
+type jsonEntry struct {
+	Label   string `json:"label"`
+	Header  bool   `json:"header"`
+	Spinner bool   `json:"spinner"`
+}
+
+// readJSON parses stdin as a JSON array of strings or objects.
+// Mixed arrays are not allowed; format is detected from the first element.
+func readJSON(r *os.File) ([]bfzf.Item, error) {
+	dec := json.NewDecoder(bufio.NewReader(r))
+
+	// Expect opening '['
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("JSON parse: %w", err)
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+		return nil, fmt.Errorf("JSON input must be an array")
+	}
+
+	var items []bfzf.Item
+	for dec.More() {
+		// Peek the raw token to decide the array element type.
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("JSON decode element: %w", err)
+		}
+
+		// Try string first.
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			if s != "" {
+				items = append(items, bfzf.NewItem(s))
+			}
+			continue
+		}
+
+		// Then try rich object.
+		var entry jsonEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return nil, fmt.Errorf("JSON element is neither a string nor an object: %s", string(raw))
+		}
+		if entry.Label == "" {
+			continue
+		}
+		switch {
+		case entry.Header:
+			items = append(items, bfzf.NewHeader(entry.Label))
+		case entry.Spinner:
+			items = append(items, newCLISpinnerItem(entry.Label))
+		default:
+			items = append(items, bfzf.NewItem(entry.Label))
+		}
+	}
+	return items, nil
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Item parsing (plain text — group-prefix / spinner-prefix annotation)
+// ────────────────────────────────────────────────────────────────────────────
+
+func parseItems(lines []string, groupPrefix, spinnerPrefix string) []bfzf.Item {
+	items := make([]bfzf.Item, 0, len(lines))
+	for _, line := range lines {
+		switch {
+		case groupPrefix != "" && strings.HasPrefix(line, groupPrefix):
+			items = append(items, bfzf.NewHeader(strings.TrimPrefix(line, groupPrefix)))
+		case spinnerPrefix != "" && strings.HasPrefix(line, spinnerPrefix):
+			items = append(items, newCLISpinnerItem(strings.TrimPrefix(line, spinnerPrefix)))
+		default:
+			items = append(items, bfzf.NewItem(line))
+		}
+	}
+	return items
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Preview template expansion
+// ────────────────────────────────────────────────────────────────────────────
+
+// fieldRefRe matches {}, {n}, {-n} in preview command templates.
+var fieldRefRe = regexp.MustCompile(`\{(-?\d*)\}`)
+
+// shellQuote wraps s in single quotes, safely escaping internal single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// expandPreviewTemplate substitutes field references in tmpl with values taken
+// from the item label split on whitespace:
+//
+//	{}    →  full label (shell-quoted)
+//	{1}   →  first whitespace-split field
+//	{n}   →  nth field (1-based)
+//	{-1}  →  last field
+//	{-n}  →  nth-from-last field
+//
+// Out-of-range indices are replaced with an empty string.
+func expandPreviewTemplate(tmpl, label string) string {
+	fields := strings.Fields(label)
+	n := len(fields)
+
+	return fieldRefRe.ReplaceAllStringFunc(tmpl, func(match string) string {
+		inner := match[1 : len(match)-1] // strip braces
+		if inner == "" {
+			// {} → full label
+			return shellQuote(label)
+		}
+		idx, err := strconv.Atoi(inner)
+		if err != nil {
+			return match // unknown token — leave as-is
+		}
+		switch {
+		case idx > 0 && idx <= n:
+			return shellQuote(fields[idx-1])
+		case idx < 0 && -idx <= n:
+			return shellQuote(fields[n+idx])
+		default:
+			return "''" // out of range → empty quoted string
+		}
+	})
+}
+
+// makeShellPreview returns a [bfzf.PreviewFunc] that runs cmdTemplate as a
+// shell command with field substitution applied to the focused item.
+func makeShellPreview(cmdTemplate string) bfzf.PreviewFunc {
+	return func(item bfzf.Item) string {
+		cmd := expandPreviewTemplate(cmdTemplate, item.Label())
+
+		c := exec.Command("sh", "-c", cmd) // #nosec G204 — intentional user command
+		out, err := c.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+				return strings.TrimRight(string(exitErr.Stderr), "\n")
+			}
+			return fmt.Sprintf("preview error: %v", err)
+		}
+		return strings.TrimRight(string(out), "\n")
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Main
+// ────────────────────────────────────────────────────────────────────────────
+
+func main() {
+	cfg := parseFlags()
+
+	// ── Collect items ─────────────────────────────────────────────────────────
+
+	var (
+		items     []bfzf.Item
+		stdinUsed bool
+	)
+
+	if flag.NArg() > 0 {
+		// Positional arguments take priority over stdin.
+		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix)
+	} else {
+		stat, err := os.Stdin.Stat()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bfzf: cannot stat stdin:", err)
+			os.Exit(1)
+		}
+		if (stat.Mode() & os.ModeCharDevice) != 0 {
+			fmt.Fprintln(os.Stderr, "bfzf: no input — pipe data in or pass items as arguments.")
+			flag.Usage()
+			os.Exit(1)
+		}
+		stdinUsed = true
+
+		if cfg.jsonInput {
+			items, err = readJSON(os.Stdin)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "bfzf:", err)
+				os.Exit(1)
+			}
+		} else {
+			delim := cfg.delimiter
+			if cfg.nul {
+				delim = "\x00"
+			}
+			rawLines, err := readLines(os.Stdin, delim)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "bfzf: error reading stdin:", err)
+				os.Exit(1)
+			}
+			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix)
+		}
+	}
+
+	if len(items) == 0 {
+		fmt.Fprintln(os.Stderr, "bfzf: no items to display.")
+		os.Exit(1)
+	}
+
+	// ── Build bfzf options ────────────────────────────────────────────────────
+
+	limit := cfg.limit
+	if cfg.multi {
+		limit = 0
+	}
+
+	opts := []bfzf.Option{
+		bfzf.WithLimit(limit),
+		bfzf.WithPrompt(cfg.prompt),
+		bfzf.WithPlaceholder(cfg.placeholder),
+	}
+	if cfg.height > 0 {
+		opts = append(opts, bfzf.WithHeight(cfg.height))
+	}
+	if cfg.noSort {
+		opts = append(opts, bfzf.WithNoSort())
+	}
+	if cfg.previewCmd != "" {
+		opts = append(opts,
+			bfzf.WithPreview(makeShellPreview(cfg.previewCmd)),
+			bfzf.WithPreviewSize(cfg.previewSize),
+		)
+		switch cfg.previewPosition {
+		case "bottom":
+			opts = append(opts, bfzf.WithPreviewPosition(bfzf.PreviewBottom))
+		default:
+			opts = append(opts, bfzf.WithPreviewPosition(bfzf.PreviewRight))
+		}
+	}
+
+	// ── Tea program options ───────────────────────────────────────────────────
+
+	var programOpts []tea.ProgramOption
+	// TUI renders on stderr so stdout stays clean for piped output.
+	programOpts = append(programOpts, tea.WithOutput(os.Stderr))
+
+	// When stdin was consumed (pipe mode), open /dev/tty for key events.
+	if stdinUsed {
+		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if err == nil {
+			defer tty.Close() // #nosec G307
+			programOpts = append(programOpts, tea.WithInput(tty))
+		}
+	}
+
+	// ── Run ───────────────────────────────────────────────────────────────────
+
+	m := bfzf.New(items, opts...)
+	p := tea.NewProgram(m, programOpts...)
+	result, err := p.Run()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bfzf:", err)
+		os.Exit(1)
+	}
+
+	fm, ok := result.(bfzf.Model)
+	if !ok || !fm.Submitted() {
+		os.Exit(1)
+	}
+
+	selected := fm.Selected()
+	if len(selected) == 0 {
+		os.Exit(1)
+	}
+
+	w := bufio.NewWriter(os.Stdout)
+	for _, item := range selected {
+		fmt.Fprintln(w, item.Label())
+	}
+	_ = w.Flush()
+}
+

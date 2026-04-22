@@ -150,6 +150,25 @@ type Model struct {
 
 	styles Styles
 	keymap KeyMap
+
+	// ── Preview ──────────────────────────────────────────────────────────────
+
+	// previewFunc is nil when preview is disabled.
+	previewFunc PreviewFunc
+	// previewVP is the scrollable preview viewport; only used when previewFunc != nil.
+	previewVP viewport.Model
+	// previewPos controls split direction (right or bottom).
+	previewPos PreviewPosition
+	// previewSize is the percentage of available space given to the preview pane.
+	previewSize int
+	// lastPreviewIdx is the item index that last triggered a preview;
+	// used to discard stale results and avoid duplicate work.
+	lastPreviewIdx int
+
+	// ── Sort ─────────────────────────────────────────────────────────────────
+
+	// sortResults controls whether fuzzy matches are sorted by score (default: true).
+	sortResults bool
 }
 
 // New creates a new Model with the provided items and options.
@@ -179,6 +198,9 @@ func New(items []Item, opts ...Option) Model {
 		vp:             viewport.New(viewport.WithWidth(80), viewport.WithHeight(10)),
 		styles:         DefaultStyles(),
 		keymap:         DefaultKeyMap(),
+		previewSize:    40,
+		lastPreviewIdx: -1,
+		sortResults:    true,
 	}
 
 	// Extract spinner configs from items implementing SpinnerItem.
@@ -232,6 +254,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resize()
 		m.ready = true
+
+	case previewResultMsg:
+		// Discard stale responses: only apply if the item is still focused.
+		if msg.itemIdx == m.lastPreviewIdx {
+			m.previewVP.SetContent(msg.content)
+		}
 
 	case tea.KeyPressMsg:
 		switch {
@@ -323,6 +351,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Sync viewport content after any state change.
 	m.vp.SetContent(m.renderList())
 	m.ensureCursorVisible()
+
+	// Trigger preview refresh if the focused item changed.
+	if cmd := m.triggerPreview(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -420,7 +453,12 @@ func (m *Model) buildVisibleFiltered(query string) {
 	for i, s := range selectables {
 		labels[i] = s.label
 	}
-	matches := fuzzy.Find(query, labels)
+	var matches []fuzzy.Match
+	if m.sortResults {
+		matches = fuzzy.Find(query, labels)
+	} else {
+		matches = fuzzy.FindNoSort(query, labels)
+	}
 
 	// Build match index map: item index -> matched character positions.
 	type matchData struct{ idxs []int }
@@ -558,13 +596,49 @@ func (m *Model) selectAll() {
 // Rendering helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-// render assembles the full TUI output: search input + list viewport + help.
+// render assembles the full TUI output. When a preview function is set the
+// output is a horizontally or vertically split panel.
 func (m *Model) render() string {
-	return strings.Join([]string{
-		m.input.View(),
-		m.vp.View(),
-		m.renderHelp(),
-	}, "\n")
+	helpStr := m.renderHelp()
+	listVP := m.vp.View()
+
+	if m.previewFunc == nil {
+		return strings.Join([]string{m.input.View(), listVP, helpStr}, "\n")
+	}
+
+	previewPane := m.renderPreviewPane()
+
+	switch m.previewPos {
+	case PreviewRight:
+		// Vertical bar separator styled with PreviewBorder.
+		barHeight := m.vp.Height()
+		bar := m.styles.PreviewBorder.Render(
+			strings.Repeat("│\n", barHeight-1) + "│",
+		)
+		splitPanel := lipgloss.JoinHorizontal(lipgloss.Top, listVP, bar, previewPane)
+		return strings.Join([]string{m.input.View(), splitPanel, helpStr}, "\n")
+
+	case PreviewBottom:
+		sep := m.styles.PreviewBorder.Render(strings.Repeat("─", m.width))
+		return strings.Join([]string{
+			m.input.View(), listVP, sep, previewPane, helpStr,
+		}, "\n")
+	}
+
+	// Fallback (should not be reached).
+	return strings.Join([]string{m.input.View(), listVP, helpStr}, "\n")
+}
+
+// renderPreviewPane builds the preview panel: a title bar + viewport content.
+func (m *Model) renderPreviewPane() string {
+	// Title bar shows the label of the currently focused item.
+	title := ""
+	if m.cursorPos >= 0 && m.cursorPos < len(m.selectableIdxs) {
+		title = m.styles.PreviewTitle.Render(
+			m.items[m.selectableIdxs[m.cursorPos]].Label(),
+		)
+	}
+	return strings.Join([]string{title, m.previewVP.View()}, "\n")
 }
 
 // renderList builds the string content for the viewport.
@@ -661,15 +735,61 @@ const (
 	minVPLines = 1
 )
 
-// resize updates the viewport dimensions to fit within m.height/m.width.
+// resize updates all sub-component dimensions to fit m.width × m.height,
+// accounting for the preview split when a preview function is set.
 func (m *Model) resize() {
-	vpH := m.height - inputLines - helpLines
-	if vpH < minVPLines {
-		vpH = minVPLines
+	if m.width == 0 || m.height == 0 {
+		return
 	}
-	m.vp.SetHeight(vpH)
-	m.vp.SetWidth(m.width)
+
+	const borderSize = 1 // 1 col (right split) or 1 row (bottom split) divider
+
+	if m.previewFunc == nil {
+		vpH := m.height - inputLines - helpLines
+		if vpH < minVPLines {
+			vpH = minVPLines
+		}
+		m.vp.SetHeight(vpH)
+		m.vp.SetWidth(m.width)
+		m.input.SetWidth(m.width)
+		m.vp.SetContent(m.renderList())
+		return
+	}
+
 	m.input.SetWidth(m.width)
+
+	switch m.previewPos {
+	case PreviewRight:
+		vpH := m.height - inputLines - helpLines
+		if vpH < minVPLines {
+			vpH = minVPLines
+		}
+		listW := m.width * (100 - m.previewSize) / 100
+		prevW := m.width - listW - borderSize
+		if prevW < 8 {
+			prevW = 8
+		}
+		m.vp.SetHeight(vpH)
+		m.vp.SetWidth(listW)
+		m.previewVP.SetHeight(vpH)
+		m.previewVP.SetWidth(prevW)
+
+	case PreviewBottom:
+		totalVP := m.height - inputLines - helpLines - borderSize
+		listVPH := totalVP * (100 - m.previewSize) / 100
+		prevVPH := totalVP - listVPH
+		if listVPH < minVPLines {
+			listVPH = minVPLines
+		}
+		if prevVPH < minVPLines {
+			prevVPH = minVPLines
+		}
+		m.vp.SetHeight(listVPH)
+		m.vp.SetWidth(m.width)
+		m.previewVP.SetHeight(prevVPH)
+		m.previewVP.SetWidth(m.width)
+	}
+
 	m.vp.SetContent(m.renderList())
 }
 

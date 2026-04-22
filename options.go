@@ -15,7 +15,7 @@ func WithLimit(n int) Option {
 	}
 }
 
-// WithPrompt sets the text-input prompt string (default "> ").
+// WithPrompt sets the text-input prompt string (default "❯ ").
 func WithPrompt(p string) Option {
 	return func(m *Model) {
 		m.Prompt = p
@@ -75,5 +75,47 @@ func WithDefaultSpinner(s spinner.Spinner) Option {
 				m.spinners[i] = sp
 			}
 		}
+	}
+}
+
+// WithPreview attaches a preview function to the model. On each cursor
+// movement the function is called in a goroutine and its output is displayed
+// in a split preview pane. Pass nil to disable preview.
+func WithPreview(fn PreviewFunc) Option {
+	return func(m *Model) {
+		m.previewFunc = fn
+		if fn != nil && m.previewVP.Width() == 0 {
+			m.previewVP = initPreview()
+		}
+	}
+}
+
+// WithPreviewPosition sets the position of the preview pane.
+// Use [PreviewRight] (default) or [PreviewBottom].
+func WithPreviewPosition(pos PreviewPosition) Option {
+	return func(m *Model) {
+		m.previewPos = pos
+	}
+}
+
+// WithPreviewSize sets the percentage of available space allocated to the
+// preview pane. Valid range is 10–90 (default 40).
+func WithPreviewSize(pct int) Option {
+	return func(m *Model) {
+		if pct < 10 {
+			pct = 10
+		}
+		if pct > 90 {
+			pct = 90
+		}
+		m.previewSize = pct
+	}
+}
+
+// WithNoSort disables score-based sorting of fuzzy matches, preserving the
+// original input order (equivalent to fzf's --no-sort).
+func WithNoSort() Option {
+	return func(m *Model) {
+		m.sortResults = false
 	}
 }

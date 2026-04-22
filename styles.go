@@ -32,6 +32,14 @@ type Styles struct {
 
 	// NoMatches styles the "no matches" message.
 	NoMatches lipgloss.Style
+
+	// PreviewBorder styles the divider character(s) between the list and
+	// the preview pane.
+	PreviewBorder lipgloss.Style
+
+	// PreviewTitle styles the one-line title bar at the top of the preview pane
+	// that shows the focused item's label.
+	PreviewTitle lipgloss.Style
 }
 
 // DefaultStyles returns an opinionated dark-terminal style set.
@@ -69,5 +77,13 @@ func DefaultStyles() Styles {
 		NoMatches: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241")).
 			Italic(true),
+
+		PreviewBorder: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")),
+
+		PreviewTitle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("99")).
+			Italic(true).
+			PaddingLeft(1),
 	}
 }
