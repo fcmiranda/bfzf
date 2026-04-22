@@ -31,6 +31,10 @@ make install          # puts `bfzf` on your PATH via go install
 ## CLI Usage
 
 ```bash
+# No pipe — works like fzf: uses $FZF_DEFAULT_COMMAND or find . -type f
+./bfzf
+./bfzf --preview 'cat {}'
+
 # Basic — pipe any command's output
 ls | ./bfzf
 

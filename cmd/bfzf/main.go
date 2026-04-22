@@ -257,30 +257,42 @@ func parseItems(lines []string, groupPrefix, spinnerPrefix string) []bfzf.Item {
 // fieldRefRe matches {}, {n}, {-n} in preview command templates.
 var fieldRefRe = regexp.MustCompile(`\{(-?\d*)\}`)
 
+// ansiEscRe matches ANSI/VT escape sequences (colors, cursor moves, etc.).
+var ansiEscRe = regexp.MustCompile(`\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])`)
+
+// stripANSI removes all ANSI escape sequences from s.
+// This matches fzf's behaviour when constructing {} substitutions.
+func stripANSI(s string) string {
+	return ansiEscRe.ReplaceAllString(s, "")
+}
+
 // shellQuote wraps s in single quotes, safely escaping internal single quotes.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // expandPreviewTemplate substitutes field references in tmpl with values taken
-// from the item label split on whitespace:
+// from the item label split on whitespace. ANSI escape codes are stripped from
+// the label before splitting so that coloured ls/eza output works correctly:
 //
-//	{}    →  full label (shell-quoted)
+//	{}    →  full label (ANSI-stripped, shell-quoted)
 //	{1}   →  first whitespace-split field
 //	{n}   →  nth field (1-based)
-//	{-1}  →  last field
+//	{-1}  →  last field  (e.g. filename from eza/ls -l)
 //	{-n}  →  nth-from-last field
 //
 // Out-of-range indices are replaced with an empty string.
 func expandPreviewTemplate(tmpl, label string) string {
-	fields := strings.Fields(label)
+	// Strip ANSI codes so colour-escaped ls/eza output doesn't break the cmd.
+	clean := strings.TrimSpace(stripANSI(label))
+	fields := strings.Fields(clean)
 	n := len(fields)
 
 	return fieldRefRe.ReplaceAllStringFunc(tmpl, func(match string) string {
 		inner := match[1 : len(match)-1] // strip braces
 		if inner == "" {
-			// {} → full label
-			return shellQuote(label)
+			// {} → full clean label
+			return shellQuote(clean)
 		}
 		idx, err := strconv.Atoi(inner)
 		if err != nil {
@@ -299,11 +311,21 @@ func expandPreviewTemplate(tmpl, label string) string {
 
 // makeShellPreview returns a [bfzf.PreviewFunc] that runs cmdTemplate as a
 // shell command with field substitution applied to the focused item.
+// Color-forcing environment variables are injected so tools like bat, highlight,
+// and ls --color automatically produce coloured output in the preview pane.
 func makeShellPreview(cmdTemplate string) bfzf.PreviewFunc {
 	return func(item bfzf.Item) string {
 		cmd := expandPreviewTemplate(cmdTemplate, item.Label())
 
 		c := exec.Command("sh", "-c", cmd) // #nosec G204 — intentional user command
+		// Inherit the current environment and layer in color-forcing variables
+		// so preview commands produce ANSI-coloured output (matches fzf behaviour).
+		c.Env = append(os.Environ(),
+			"TERM=xterm-256color",
+			"COLORTERM=truecolor",
+			"CLICOLOR_FORCE=1",  // BSD/macOS ls, many CLIs
+			"FORCE_COLOR=3",     // npm/Node ecosystem
+		)
 		out, err := c.Output()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
@@ -338,30 +360,47 @@ func main() {
 			fmt.Fprintln(os.Stderr, "bfzf: cannot stat stdin:", err)
 			os.Exit(1)
 		}
-		if (stat.Mode() & os.ModeCharDevice) != 0 {
-			fmt.Fprintln(os.Stderr, "bfzf: no input — pipe data in or pass items as arguments.")
-			flag.Usage()
-			os.Exit(1)
-		}
-		stdinUsed = true
 
-		if cfg.jsonInput {
-			items, err = readJSON(os.Stdin)
+		if (stat.Mode() & os.ModeCharDevice) != 0 {
+			// No pipe — behave like fzf: use $FZF_DEFAULT_COMMAND or find(1).
+			// stdinUsed stays false; /dev/tty is always available.
+			defaultCmd := os.Getenv("FZF_DEFAULT_COMMAND")
+			if defaultCmd == "" {
+				defaultCmd = "find . -type f -not -path '*/.*'"
+			}
+			out, err := exec.Command("sh", "-c", defaultCmd).Output() // #nosec G204
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "bfzf:", err)
+				fmt.Fprintln(os.Stderr, "bfzf: default command failed:", err)
 				os.Exit(1)
 			}
-		} else {
-			delim := cfg.delimiter
-			if cfg.nul {
-				delim = "\x00"
-			}
-			rawLines, err := readLines(os.Stdin, delim)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "bfzf: error reading stdin:", err)
-				os.Exit(1)
+			var rawLines []string
+			for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					rawLines = append(rawLines, line)
+				}
 			}
 			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix)
+		} else {
+			stdinUsed = true
+
+			if cfg.jsonInput {
+				items, err = readJSON(os.Stdin)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "bfzf:", err)
+					os.Exit(1)
+				}
+			} else {
+				delim := cfg.delimiter
+				if cfg.nul {
+					delim = "\x00"
+				}
+				rawLines, err := readLines(os.Stdin, delim)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "bfzf: error reading stdin:", err)
+					os.Exit(1)
+				}
+				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix)
+			}
 		}
 	}
 
