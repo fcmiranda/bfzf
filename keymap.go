@@ -105,12 +105,12 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+c", "abort"),
 		),
 		PreviewDown: key.NewBinding(
-			key.WithKeys("shift+down"),
-			key.WithHelp("shift+↓", "preview ↓"),
+			key.WithKeys("shift+down", "ctrl+d"),
+			key.WithHelp("shift+↓/ctrl+d", "preview ↓"),
 		),
 		PreviewUp: key.NewBinding(
-			key.WithKeys("shift+up"),
-			key.WithHelp("shift+↑", "preview ↑"),
+			key.WithKeys("shift+up", "ctrl+u"),
+			key.WithHelp("shift+↑/ctrl+u", "preview ↑"),
 		),
 		PreviewPageDown: key.NewBinding(
 			key.WithKeys("shift+pgdown"),
