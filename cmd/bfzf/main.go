@@ -110,6 +110,14 @@ type config struct {
 	markerUnselected string
 	inputWidth       int
 	bind             []string // raw "key:action" strings
+	// wrap flags
+	wrapWord         bool
+	wrapSign         string
+	previewWrapSign  string
+	// ui appearance
+	infoHidden       bool
+	outerBorder      string // "rounded","sharp","bold","block","double","none"
+	noColor          bool
 }
 
 // multiString is a flag.Value that accumulates repeated --bind values.
@@ -163,6 +171,12 @@ func parseFlags() config {
 	flag.IntVar(&cfg.inputWidth, "input-width", 0, "constrain search input to N columns (0 = full width)")
 	var bindSpec multiString
 	flag.Var(&bindSpec, "bind", `runtime key binding key:action (repeatable, e.g. "ctrl+/:toggle-preview")`)
+	flag.BoolVar(&cfg.wrapWord, "wrap-word", false, "enable word-level wrapping of long item labels in the list")
+	flag.StringVar(&cfg.wrapSign, "wrap-sign", "", `glyph prepended to continuation lines when --wrap-word is active (e.g. "↩ ")`)
+	flag.StringVar(&cfg.previewWrapSign, "preview-wrap-sign", "", `glyph shown on soft-wrapped continuation lines in preview pane (e.g. "↩")`)
+	flag.BoolVar(&cfg.infoHidden, "no-info", false, "hide the match-count info line")
+	flag.StringVar(&cfg.outerBorder, "border", "", `wrap entire picker in a border: rounded (default when flag set), sharp, bold, block, double`)
+	flag.BoolVar(&cfg.noColor, "no-color", false, "disable all ANSI colour output")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -551,12 +565,35 @@ func main() {
 	}
 	if cfg.previewWindow == "hidden" {
 		opts = append(opts, bfzf.WithPreviewHidden())
+	} else if cfg.previewWindow == "wrap-word" {
+		opts = append(opts, bfzf.WithPreviewWrapWord())
+	} else if cfg.previewWindow == "hidden,wrap-word" || cfg.previewWindow == "wrap-word,hidden" {
+		opts = append(opts, bfzf.WithPreviewHidden())
+		opts = append(opts, bfzf.WithPreviewWrapWord())
 	}
 	if cfg.markerSelected != "" || cfg.markerUnselected != "" {
 		opts = append(opts, bfzf.WithMarkerGlyphs(cfg.markerSelected, cfg.markerUnselected))
 	}
 	if cfg.inputWidth > 0 {
 		opts = append(opts, bfzf.WithInputWidth(cfg.inputWidth))
+	}
+	if cfg.wrapWord {
+		opts = append(opts, bfzf.WithWrapWord())
+	}
+	if cfg.wrapSign != "" {
+		opts = append(opts, bfzf.WithWrapSign(cfg.wrapSign))
+	}
+	if cfg.previewWrapSign != "" {
+		opts = append(opts, bfzf.WithPreviewWrapSign(cfg.previewWrapSign))
+	}
+	if cfg.infoHidden {
+		opts = append(opts, bfzf.WithInfoStyle(bfzf.InfoHidden))
+	}
+	if cfg.outerBorder != "" {
+		opts = append(opts, bfzf.WithOuterBorder(parseBorderType(cfg.outerBorder)))
+	}
+	if cfg.noColor {
+		opts = append(opts, bfzf.WithNoColor())
 	}
 	for _, bindSpec := range cfg.bind {
 		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix)
@@ -671,6 +708,9 @@ func parseHeightArg(s string) (abs int, pct int, ok bool) {
 // parseBind parses a "key:action" string and returns the key string and a
 // BindFunc. Supported actions:
 //   - toggle-preview
+//   - toggle-wrap
+//   - toggle-wrap-word
+//   - toggle-preview-wrap-word
 //   - clear-query
 //   - abort
 //   - accept
@@ -689,6 +729,12 @@ func parseBind(spec, groupPrefix, spinnerPrefix string) (string, bfzf.BindFunc, 
 	switch {
 	case action == "toggle-preview":
 		fn = bfzf.BindTogglePreview()
+	case action == "toggle-wrap":
+		fn = bfzf.BindToggleWrap()
+	case action == "toggle-wrap-word":
+		fn = bfzf.BindToggleWrapWord()
+	case action == "toggle-preview-wrap-word":
+		fn = bfzf.BindTogglePreviewWrapWord()
 	case action == "clear-query":
 		fn = bfzf.BindClearQuery()
 	case action == "abort":
@@ -739,6 +785,25 @@ func namedMarkerStyle(name string) (bfzf.MarkerStyle, bool) {
 		return bfzf.MarkerDiamonds, true
 	}
 	return bfzf.MarkerStyle{}, false
+}
+
+// parseBorderType maps fzf --border type strings to lipgloss.Border values.
+// Unknown values default to RoundedBorder.
+func parseBorderType(s string) lipgloss.Border {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "sharp", "solid":
+		return lipgloss.NormalBorder()
+	case "bold", "thick":
+		return lipgloss.ThickBorder()
+	case "block":
+		return lipgloss.BlockBorder()
+	case "double":
+		return lipgloss.DoubleBorder()
+	case "none":
+		return lipgloss.Border{}
+	default: // "rounded" or any other value
+		return lipgloss.RoundedBorder()
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────

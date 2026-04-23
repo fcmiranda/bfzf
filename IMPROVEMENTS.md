@@ -84,13 +84,13 @@ and `--marker` but `--marker` takes a style name rather than the raw glyphs.
 
 ## Medium priority
 
-### 9. `--info [default|right|hidden|inline]` — match count / position info
+### 9. `--info [default|right|hidden|inline]` — match count / position info ✅ DONE
 fzf can show the match info line in different positions: below the input (default),
 inline at the right edge of the input, or hidden.  bfzf always shows the help line
 at the bottom.
 
-**Scope**: Add `WithInfoStyle(s InfoStyle) Option` with three modes; move the info
-string render site accordingly.
+**Scope**: `WithInfoStyle(InfoStyle)`: `InfoDefault` (count shown above list) /
+`InfoHidden` (suppressed). CLI: `--no-info`. Regex search also added (`/pat`).
 
 ---
 
@@ -100,7 +100,7 @@ with newest matches at top (fzf's default behaviour when used with `--reverse`).
 
 ---
 
-### 11. Regex search mode (`//` prefix)
+### 11. Regex search mode (`//` prefix) ✅ DONE
 fzf activates regex mode when the query starts with `/`.
 Implementing regex alongside the existing fuzzy pass would unblock power users.
 
@@ -140,9 +140,9 @@ Switch `readLines` to `bufio.Scanner` with a regexp-based split function.
 
 ---
 
-### 17. Colors: `--no-color` and 256/24-bit auto-detection
+### 17. Colors: `--no-color` and 256/24-bit auto-detection ✅ DONE (no-color)
 fzf disables colors automatically when the terminal reports < 8 colors.  bfzf
-always emits ANSI codes.  Add `WithAutoColor(bool)` and `--no-color` flag.
+always emits ANSI codes.  Add `WithNoColor()` and `--no-color` flag.
 
 ---
 
@@ -152,12 +152,12 @@ without specifying a color explicitly.
 
 ---
 
-### 19. `--border [rounded|sharp|bold|block|double|horizontal|vertical|none]`
+### 19. `--border [rounded|sharp|bold|block|double|horizontal|vertical|none]` ✅ DONE
 fzf's `--border` wraps the entire picker in a single outer border (not just the
 list or preview panes individually).  bfzf currently only borders individual panes.
 
-**Scope**: Wrap `render()` output in a top-level lipgloss border style.
-Option: `WithOuterBorder(b lipgloss.Border)` / `--border TYPE`.
+**Scope**: `WithOuterBorder(lipgloss.Border)` wraps `render()` output in a
+top-level lipgloss border. CLI: `--border [rounded|sharp|bold|block|double|none]`.
 
 ---
 

@@ -1,9 +1,11 @@
-// Example program demonstrating bfzf features including high-priority fzf parity:
+// Example program demonstrating bfzf features including fzf parity:
 //   - Grouped options with non-selectable headers
 //   - Options with animated spinners (indicating in-progress state)
 //   - Multi-select mode
 //   - Fuzzy search with highlighted matches
 //   - --reverse, --query, --exact, --header-lines, WithPreviewHidden, WithBind
+//   - Cursor row full-width background highlight
+//   - Word-wrap with wrap sign, outer border, info line, regex search
 package main
 
 import (
@@ -121,6 +123,14 @@ func customStyles() bfzf.Styles {
 	s.UnselectedPrefix = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("238"))
 
+	// Cursor row full-width background highlight (fzf-style selection bar).
+	s.CursorRowBg = lipgloss.NewStyle().
+		Background(lipgloss.Color("236"))
+
+	// Optional wrap sign style.
+	s.WrapSign = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241"))
+
 	return s
 }
 
@@ -129,17 +139,21 @@ func customStyles() bfzf.Styles {
 func main() {
 	items := buildItems()
 
-	// Demonstrate several fzf-parity features:
-	//   WithReverse()        → list renders bottom-to-top
-	//   WithQuery("go")      → pre-filter to items matching "go"
-	//   WithPreviewHidden()  → preview starts hidden; ctrl+/ toggles it
-	//   WithBind             → extra runtime key actions
-	//   WithHeaderLines(0)   → no pinned header (items[0] is a HeaderItem,
-	//                          so the group header already acts as a section divider)
+	// Demonstrate several fzf-parity + new features:
+	//   WithReverse()               → list renders bottom-to-top
+	//   WithQuery("go")             → pre-filter to items matching "go"
+	//   WithPreviewHidden()         → preview starts hidden; ctrl+/ toggles it
+	//   WithBind                    → extra runtime key actions
+	//   WithOuterBorder             → rounded border wraps the entire picker
+	//   WithWrapWord / WithWrapSign → word-wrap long labels with a sign
+	//   styles.CursorRowBg          → full-width cursor row background highlight
+	//
+	// At runtime, type "/go" in the search box to activate regex search.
+	// Press Alt+W to toggle word-wrap; Alt+Shift+W for preview word-wrap.
 	m := bfzf.New(
 		items,
 		bfzf.WithLimit(0), // unlimited multi-select
-		bfzf.WithPlaceholder("Search languages…"),
+		bfzf.WithPlaceholder("Search languages… (try /go for regex)"),
 		bfzf.WithStyles(customStyles()),
 		bfzf.WithReverse(),
 		bfzf.WithQuery("go"),
@@ -147,8 +161,15 @@ func main() {
 			return "Preview: " + item.Label()
 		}),
 		bfzf.WithPreviewHidden(),
+		bfzf.WithPreviewWrapWord(),
+		bfzf.WithPreviewWrapSign("↩"),
+		bfzf.WithOuterBorder(lipgloss.RoundedBorder()),
+		bfzf.WithWrapWord(),
+		bfzf.WithWrapSign("↩ "),
 		bfzf.WithBind("ctrl+/", bfzf.BindTogglePreview()),
 		bfzf.WithBind("ctrl+x", bfzf.BindClearQuery()),
+		bfzf.WithBind("alt+w", bfzf.BindToggleWrapWord()),
+		bfzf.WithBind("alt+W", bfzf.BindTogglePreviewWrapWord()),
 	)
 
 	p := tea.NewProgram(m)

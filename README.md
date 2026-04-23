@@ -6,15 +6,24 @@
 
 - **Real-time fuzzy search** with match highlighting
 - **fzf-compatible query operators** — `'exact`, `^prefix`, `suffix$`, `!negate`, multi-term AND
+- **Regex search** — prefix query with `/` to activate regexp mode (e.g. `/\.go$`)
 - **`--reverse`** — render list bottom-to-top
 - **`--query STRING`** — pre-filled initial filter
 - **`--exact`** — switch to substring/exact match mode
 - **`--header-lines N`** — pinned non-scrolling column header above the list
 - **`--preview-window hidden`** — start with preview hidden; `Ctrl+/` to toggle
-- **`--bind key:action`** — runtime bindings: `toggle-preview`, `clear-query`, `reload(cmd)`, `accept`, `abort`
+- **`--preview-window wrap-word`** — word-level soft-wrap in preview pane
+- **`--preview-wrap-sign STR`** — glyph shown on soft-wrapped continuation lines in preview
+- **`--bind key:action`** — runtime bindings: `toggle-preview`, `toggle-wrap`, `toggle-wrap-word`, `toggle-preview-wrap-word`, `clear-query`, `reload(cmd)`, `accept`, `abort`
 - **`--print0`** — NUL-separated output for filenames with spaces
 - **`--input-width N`** — constrain the search input width
 - **`--marker-selected` / `--marker-unselected`** — custom glyph strings for multi-select markers
+- **`--wrap-word`** — word-level wrapping of long item labels in the list
+- **`--wrap-sign STR`** — glyph prepended to continuation lines when `--wrap-word` is active
+- **Info line** — match count (`42/1000`) shown above the list; `--no-info` to hide
+- **Cursor row highlight** — full-width background highlight on the focused item (fzf-style)
+- **`--border TYPE`** — wrap entire picker in a border (`rounded`, `sharp`, `bold`, `block`, `double`)
+- **`--no-color`** — disable all ANSI colour output
 - **CLI Tool** — pipe stdin or pass positional arguments, just like `fzf`
 - **Live Preview** — run any shell command on the focused item; split pane (right or bottom)
 - **Preview field selectors** — `{-1}` extracts the last field (filename from `ls -l`), `{n}` for nth field
@@ -86,6 +95,24 @@ ls | ./bfzf --input-width 40
 # Custom multi-select glyphs
 ls | ./bfzf -m --marker-selected '▶ ' --marker-unselected '  '
 
+# Regex search — prefix query with / to activate regexp mode
+ls | ./bfzf --query '/\.go$'
+
+# Word-wrap long labels in the list (alt+w to toggle at runtime)
+cat long_paths.txt | ./bfzf --wrap-word --wrap-sign '↩ '
+
+# Word-wrap in preview pane with a wrap indicator
+ls | ./bfzf --preview 'cat {}' --preview-window wrap-word --preview-wrap-sign '↩'
+
+# Outer border around the entire picker
+ls | ./bfzf --border rounded
+
+# No colour output (useful for logging/CI)
+ls | ./bfzf --no-color
+
+# Hide the match-count info line
+ls | ./bfzf --no-info
+
 # Group headers (lines starting with prefix become non-selectable headers)
 printf '#Fruits\nApple\nBanana\n#Veg\nCarrot' | ./bfzf --group-prefix '#'
 
@@ -149,11 +176,17 @@ EOF
 | `-query STRING` | — | Initial query string for pre-filtering |
 | `-print0` | false | Output NUL-separated results instead of newline-separated |
 | `-header-lines N` | 0 | Treat first N input lines as a pinned non-scrolling header (excluded from matching) |
-| `-preview-window opts` | — | Preview window options; `hidden` starts with preview hidden (`ctrl+/` to toggle) |
+| `-preview-window opts` | — | Preview window options; `hidden` starts with preview hidden (`ctrl+/` to toggle); `wrap-word` enables word-level wrapping in preview |
 | `-marker-selected str` | — | Raw glyph for selected items in multi-select mode (e.g. `▶ `) |
 | `-marker-unselected str` | — | Raw glyph for unselected items in multi-select mode |
 | `-input-width N` | 0 | Constrain search input to N columns (0 = full width) |
-| `-bind key:action` | — | Runtime key binding (repeatable); actions: `toggle-preview`, `clear-query`, `abort`, `accept`, `reload(cmd)` |
+| `-bind key:action` | — | Runtime key binding (repeatable); actions: `toggle-preview`, `toggle-wrap`, `toggle-wrap-word`, `toggle-preview-wrap-word`, `clear-query`, `abort`, `accept`, `reload(cmd)` |
+| `-wrap-word` | false | Enable word-level wrapping of long item labels in the list |
+| `-wrap-sign str` | — | Glyph prepended to continuation lines when `--wrap-word` is active (e.g. `↩ `) |
+| `-preview-wrap-sign str` | — | Glyph on soft-wrapped continuation lines in the preview pane (e.g. `↩`) |
+| `-no-info` | false | Hide the match-count info line |
+| `-border type` | — | Wrap entire picker in a border: `rounded` (default), `sharp`, `bold`, `block`, `double`, `none` |
+| `-no-color` | false | Disable all ANSI colour output |
 
 ### Preview field selectors
 
@@ -302,6 +335,9 @@ m := bfzf.New(items)
 | `Shift+Home` / `Shift+End` | Jump to preview top / bottom | `km.PreviewTop` / `km.PreviewBottom` |
 | `Ctrl+F` | Toggle search input on/off | `km.ToggleInput` |
 | `Ctrl+/` | Toggle preview pane on/off | `km.TogglePreview` |
+| `Alt+/` | Toggle character-level wrap in list | `km.ToggleWrap` |
+| `Alt+W` | Toggle word-level wrap in list | `km.ToggleWrapWord` |
+| `Alt+Shift+W` | Toggle word-level wrap in preview | `km.TogglePreviewWrapWord` |
 
 ### Theming / Style overrides
 
@@ -569,6 +605,9 @@ Library: `bfzf.WithInputWidth(40)`
 | Action | Description |
 |---|---|
 | `toggle-preview` | Show/hide preview pane |
+| `toggle-wrap` | Toggle character-level soft-wrap in the list |
+| `toggle-wrap-word` | Toggle word-level wrap in the list |
+| `toggle-preview-wrap-word` | Toggle word-level wrap in the preview pane |
 | `clear-query` | Clear the search input |
 | `abort` | Quit without selecting |
 | `accept` | Confirm current selection |
@@ -577,6 +616,7 @@ Library: `bfzf.WithInputWidth(40)`
 ```bash
 ls | ./bfzf --preview 'cat {}' --bind 'ctrl+/:toggle-preview'
 ls | ./bfzf --bind 'ctrl+r:reload(find . -type f)'
+ls | ./bfzf --bind 'alt+w:toggle-wrap-word'
 ls | ./bfzf --bind 'ctrl+x:abort' --bind 'alt+enter:accept'
 ```
 
@@ -584,6 +624,7 @@ Library:
 ```go
 m := bfzf.New(items,
     bfzf.WithBind("ctrl+/", bfzf.BindTogglePreview()),
+    bfzf.WithBind("alt+w", bfzf.BindToggleWrapWord()),
     bfzf.WithBind("ctrl+r", bfzf.BindReloadItems(func() []bfzf.Item {
         out, _ := exec.Command("find", ".", "-type", "f").Output()
         var items []bfzf.Item
@@ -595,6 +636,116 @@ m := bfzf.New(items,
     bfzf.WithBind("ctrl+space", bfzf.BindChangeQuery("myprefix")),
 )
 ```
+
+---
+
+### Regex search (query starts with `/`)
+
+Prefix your query with `/` to activate regexp matching (case-insensitive):
+
+```bash
+ls | ./bfzf --query '/\.go$'       # files ending in .go
+ls | ./bfzf --query '/^cmd'        # files starting with cmd
+ls | ./bfzf                        # type /test in the search box at runtime
+```
+
+---
+
+### Word-wrap long labels (`--wrap-word`)
+
+Enable word-level wrapping of long item labels in the list. Long entries are
+split at word boundaries and continuation lines are indented to align with the
+label start. Toggle at runtime with `Alt+W`.
+
+```bash
+cat long_paths.txt | ./bfzf --wrap-word
+cat long_paths.txt | ./bfzf --wrap-word --wrap-sign '↩ '
+```
+
+Library:
+```go
+m := bfzf.New(items,
+    bfzf.WithWrapWord(),
+    bfzf.WithWrapSign("↩ "),
+)
+```
+
+---
+
+### Word-wrap in preview (`--preview-window wrap-word`)
+
+Enable word-level soft-wrapping in the preview pane. Toggle at runtime with `Alt+Shift+W`.
+
+```bash
+ls | ./bfzf --preview 'cat {}' --preview-window wrap-word --preview-wrap-sign '↩'
+```
+
+Library:
+```go
+m := bfzf.New(items,
+    bfzf.WithPreview(previewFn),
+    bfzf.WithPreviewWrapWord(),
+    bfzf.WithPreviewWrapSign("↩"),
+)
+```
+
+---
+
+### Cursor row highlight
+
+The focused item row is highlighted with a full-width background bar (fzf-style).
+Customise via `Styles.CursorRowBg`:
+
+```go
+m := bfzf.New(items,
+    bfzf.WithStyleFunc(func(s *bfzf.Styles) {
+        s.CursorRowBg = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+    }),
+)
+// Disable: set CursorRowBg to a zero-value lipgloss.Style
+```
+
+---
+
+### `--info` / `--no-info` — match count display
+
+A match count line (`42/1000`) is shown by default between the input and the list.
+Hide it with `--no-info`:
+
+```bash
+ls | ./bfzf --no-info
+```
+
+Library: `bfzf.WithInfoStyle(bfzf.InfoHidden)`
+
+---
+
+### `--border` — outer picker border
+
+Wrap the entire picker in a border:
+
+```bash
+ls | ./bfzf --border rounded
+ls | ./bfzf --border sharp
+ls | ./bfzf --border bold
+```
+
+Library:
+```go
+m := bfzf.New(items,
+    bfzf.WithOuterBorder(lipgloss.RoundedBorder()),
+)
+```
+
+---
+
+### `--no-color` — disable ANSI colours
+
+```bash
+ls | ./bfzf --no-color
+```
+
+Library: `bfzf.WithNoColor()`
 
 ---
 
@@ -614,4 +765,7 @@ m := bfzf.New(items,
 | `Shift+Home` / `Shift+End` | Jump to preview top / bottom | `km.PreviewTop` / `km.PreviewBottom` |
 | `Ctrl+F` | Toggle search input on/off (clears filter when hidden) | `km.ToggleInput` |
 | `Ctrl+/` | Toggle preview pane on/off | `km.TogglePreview` |
+| `Alt+/` | Toggle character-level wrap in list | `km.ToggleWrap` |
+| `Alt+W` | Toggle word-level wrap in list | `km.ToggleWrapWord` |
+| `Alt+Shift+W` | Toggle word-level wrap in preview | `km.TogglePreviewWrapWord` |
 

@@ -25,6 +25,7 @@ package bfzf
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -144,6 +145,57 @@ func BindReloadItems(fn func() []Item) BindFunc {
 	}
 }
 
+// BindToggleWrap returns a [BindFunc] that toggles character-level soft-wrap
+// on the list viewport (equivalent to pressing KeyMap.ToggleWrap).
+func BindToggleWrap() BindFunc {
+	return func(m *Model) tea.Cmd {
+		if m.wrapWord {
+			return nil // word-wrap takes precedence; noop
+		}
+		m.wrapList = !m.wrapList
+		m.vp.SoftWrap = m.wrapList
+		m.vp.SetContent(m.renderList())
+		return nil
+	}
+}
+
+// BindToggleWrapWord returns a [BindFunc] that toggles word-level wrapping on
+// the list viewport (equivalent to pressing KeyMap.ToggleWrapWord).
+func BindToggleWrapWord() BindFunc {
+	return func(m *Model) tea.Cmd {
+		m.wrapWord = !m.wrapWord
+		if m.wrapWord {
+			m.wrapList = false // manual wrapping takes over from SoftWrap
+			m.vp.SoftWrap = false
+		}
+		m.vp.SetContent(m.renderList())
+		return nil
+	}
+}
+
+// BindTogglePreviewWrapWord returns a [BindFunc] that toggles word-level
+// soft-wrapping in the preview viewport (equivalent to pressing
+// KeyMap.TogglePreviewWrapWord).
+func BindTogglePreviewWrapWord() BindFunc {
+	return func(m *Model) tea.Cmd {
+		m.previewWrapWord = !m.previewWrapWord
+		m.previewVP.SoftWrap = m.previewWrapWord
+		if m.previewWrapWord && m.previewWrapSign != "" {
+			sign := m.previewWrapSign
+			signW := lipgloss.Width(sign)
+			m.previewVP.LeftGutterFunc = func(ctx viewport.GutterContext) string {
+				if ctx.Soft {
+					return sign
+				}
+				return strings.Repeat(" ", signW)
+			}
+		} else {
+			m.previewVP.LeftGutterFunc = viewport.NoGutter
+		}
+		return nil
+	}
+}
+
 // bindEntry pairs a key.Binding with a BindFunc for runtime dispatch.
 type bindEntry struct {
 	binding key.Binding
@@ -156,6 +208,17 @@ type bindEntry struct {
 
 type searchKind int
 
+// InfoStyle controls where the match-count / info text is displayed.
+type InfoStyle int
+
+const (
+	// InfoDefault shows the match count on a separate line between the input
+	// and the list (fzf's default behaviour).
+	InfoDefault InfoStyle = iota
+	// InfoHidden suppresses the match-count info line entirely.
+	InfoHidden
+)
+
 const (
 	searchFuzzy         searchKind = iota // normal fuzzy (default)
 	searchExact                           // 'text  → substring match
@@ -165,6 +228,7 @@ const (
 	searchNegateExact                     // !'text → must NOT contain
 	searchNegatePrefix                    // !^text → must NOT have prefix
 	searchNegateSuffix                    // !text$ → must NOT have suffix
+	searchRegex                           // /pat   → regexp match
 )
 
 type searchToken struct {
@@ -210,6 +274,12 @@ func parseSearchTokens(query string, exactMode bool) []searchToken {
 				tokens = append(tokens, searchToken{searchNegateSuffix, val})
 			} else {
 				tokens = append(tokens, searchToken{searchSuffix, val})
+			}
+		case strings.HasPrefix(p, "/"):
+			// Regex mode: /pattern
+			val := p[1:]
+			if val != "" {
+				tokens = append(tokens, searchToken{searchRegex, val})
 			}
 		default:
 			if negate {
@@ -383,6 +453,49 @@ type Model struct {
 
 	// bindActions holds key-to-action pairs registered via [WithBind].
 	bindActions []bindEntry
+
+	// ── List wrapping ─────────────────────────────────────────────────────────
+
+	// wrapList enables character-level soft-wrapping of long list rows via the
+	// viewport's SoftWrap mode. Toggled by KeyMap.ToggleWrap.
+	wrapList bool
+
+	// wrapWord enables word-level wrapping of long list rows via pre-processing.
+	// When true, wrapList's SoftWrap is disabled (manual wrapping takes over).
+	// Toggled by KeyMap.ToggleWrapWord.
+	wrapWord bool
+
+	// wrapSign is the glyph prepended to each continuation line when wrapWord
+	// is active (default empty; rendered with Styles.WrapSign).
+	wrapSign string
+
+	// ── Preview wrapping ─────────────────────────────────────────────────────
+
+	// previewWrapWord enables word-level soft-wrapping in the preview viewport.
+	// Toggled by KeyMap.TogglePreviewWrapWord.
+	previewWrapWord bool
+
+	// previewWrapSign is the glyph shown on soft-wrapped continuation lines in
+	// the preview pane (default "↩"; shown via viewport.LeftGutterFunc).
+	previewWrapSign string
+
+	// ── Info style ────────────────────────────────────────────────────────────
+
+	// infoStyle controls the placement of the match-count info text.
+	infoStyle InfoStyle
+
+	// ── Outer border ─────────────────────────────────────────────────────────
+
+	// showOuterBorder wraps the entire rendered output in a lipgloss border.
+	showOuterBorder bool
+
+	// outerBorderStyle is the lipgloss style for the outer border.
+	outerBorderStyle lipgloss.Style
+
+	// ── No-colour mode ───────────────────────────────────────────────────────
+
+	// noColor disables ANSI colour output by zeroing all styles.
+	noColor bool
 }
 
 // New creates a new Model with the provided items and options.
@@ -528,6 +641,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateFilter()
 			}
 			m.resize()
+
+		case matchesAny(msg, m.keymap.ToggleWrap) && !m.wrapWord:
+			m.wrapList = !m.wrapList
+			m.vp.SoftWrap = m.wrapList
+			m.vp.SetContent(m.renderList())
+
+		case matchesAny(msg, m.keymap.ToggleWrapWord):
+			m.wrapWord = !m.wrapWord
+			if m.wrapWord {
+				m.wrapList = false
+				m.vp.SoftWrap = false
+			}
+			m.vp.SetContent(m.renderList())
+
+		case matchesAny(msg, m.keymap.TogglePreviewWrapWord) && m.previewFunc != nil:
+			m.previewWrapWord = !m.previewWrapWord
+			m.previewVP.SoftWrap = m.previewWrapWord
+			if m.previewWrapWord && m.previewWrapSign != "" {
+				sign := m.previewWrapSign
+				signW := lipgloss.Width(sign)
+				m.previewVP.LeftGutterFunc = func(ctx viewport.GutterContext) string {
+					if ctx.Soft {
+						return sign
+					}
+					return strings.Repeat(" ", signW)
+				}
+			} else {
+				m.previewVP.LeftGutterFunc = viewport.NoGutter
+			}
 
 		// List navigation and selection.
 		default:
@@ -764,14 +906,23 @@ func (m *Model) buildVisibleFiltered(query string) {
 	type specialTok struct {
 		kind searchKind
 		val  string
+		re   *regexp.Regexp // non-nil for searchRegex
 	}
 	var specials []specialTok
 	for _, t := range tokens {
 		switch t.kind {
 		case searchFuzzy:
 			fuzzyTerms = append(fuzzyTerms, t.value)
+		case searchRegex:
+			re, err := regexp.Compile("(?i)" + t.value)
+			if err != nil {
+				// Fallback: treat as exact substring if pattern is invalid.
+				specials = append(specials, specialTok{searchExact, t.value, nil})
+			} else {
+				specials = append(specials, specialTok{searchRegex, t.value, re})
+			}
 		default:
-			specials = append(specials, specialTok{t.kind, t.value})
+			specials = append(specials, specialTok{t.kind, t.value, nil})
 		}
 	}
 
@@ -853,6 +1004,10 @@ func (m *Model) buildVisibleFiltered(query string) {
 				}
 			case searchNegateSuffix:
 				if strings.HasSuffix(lbl, val) {
+					pass = false
+				}
+			case searchRegex:
+				if sp.re != nil && !sp.re.MatchString(s.label) {
 					pass = false
 				}
 			}
@@ -1053,32 +1208,41 @@ func (m *Model) render() string {
 		}
 	}
 
+	infoLine := m.renderMatchInfo()
+
+	var out string
 	if m.previewFunc == nil || m.hidePreview {
-		return join(inputView, pinnedHeader, listPane, helpStr)
-	}
+		out = join(inputView, infoLine, pinnedHeader, listPane, helpStr)
+	} else {
+		previewPane := m.renderPreviewPane()
 
-	previewPane := m.renderPreviewPane()
+		switch m.previewPos {
+		case PreviewRight:
+			var splitPanel string
+			if m.showPreviewBorder {
+				splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
+			} else {
+				barHeight := m.vp.Height()
+				bar := m.styles.PreviewBorder.Render(
+					strings.Repeat("│\n", barHeight-1) + "│",
+				)
+				splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, bar, previewPane)
+			}
+			out = join(inputView, infoLine, pinnedHeader, splitPanel, helpStr)
 
-	switch m.previewPos {
-	case PreviewRight:
-		var splitPanel string
-		if m.showPreviewBorder {
-			splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
-		} else {
-			barHeight := m.vp.Height()
-			bar := m.styles.PreviewBorder.Render(
-				strings.Repeat("│\n", barHeight-1) + "│",
-			)
-			splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, bar, previewPane)
+		case PreviewBottom:
+			sep := m.styles.PreviewBorder.Render(strings.Repeat("─", m.width))
+			out = join(inputView, infoLine, pinnedHeader, listPane, sep, previewPane, helpStr)
+
+		default:
+			out = join(inputView, infoLine, pinnedHeader, listPane, helpStr)
 		}
-		return join(inputView, pinnedHeader, splitPanel, helpStr)
-
-	case PreviewBottom:
-		sep := m.styles.PreviewBorder.Render(strings.Repeat("─", m.width))
-		return join(inputView, pinnedHeader, listPane, sep, previewPane, helpStr)
 	}
 
-	return join(inputView, pinnedHeader, listPane, helpStr)
+	if m.showOuterBorder {
+		out = m.outerBorderStyle.Render(out)
+	}
+	return out
 }
 
 // renderListPane builds the list side: optional titled border + viewport.
@@ -1232,6 +1396,16 @@ func (m *Model) renderList() string {
 	}
 
 	prefixWidth := lipgloss.Width(m.keymap.CursorPrefix)
+
+	// Compute marker width once (same for selected/unselected prefixes).
+	markerW := 1 // single-select spacer
+	if m.Limit != 1 {
+		markerW = lipgloss.Width(m.keymap.SelectedPrefix)
+	}
+
+	// Pre-extract the cursor row background colour (nil when not set).
+	cursorBg := m.styles.CursorRowBg.GetBackground()
+
 	var sb strings.Builder
 
 	// In reverse mode render items bottom-to-top.
@@ -1252,12 +1426,17 @@ func (m *Model) renderList() string {
 		} else {
 			isCursor := ve.itemIdx == cursorItemIdx
 			_, isSelected := m.selected[ve.itemIdx]
+			hasCursorBg := isCursor && cursorBg != nil
 
 			var line strings.Builder
 
 			// Cursor indicator column.
 			if isCursor {
-				line.WriteString(m.styles.CursorIndicator.Render(m.keymap.CursorPrefix))
+				is := m.styles.CursorIndicator
+				if hasCursorBg {
+					is = is.Background(cursorBg)
+				}
+				line.WriteString(is.Render(m.keymap.CursorPrefix))
 			} else {
 				line.WriteString(strings.Repeat(" ", prefixWidth))
 			}
@@ -1265,12 +1444,25 @@ func (m *Model) renderList() string {
 			// Selection prefix (multi-select only).
 			if m.Limit != 1 {
 				if isSelected {
-					line.WriteString(m.styles.SelectedPrefix.Render(m.keymap.SelectedPrefix))
+					ps := m.styles.SelectedPrefix
+					if hasCursorBg {
+						ps = ps.Background(cursorBg)
+					}
+					line.WriteString(ps.Render(m.keymap.SelectedPrefix))
 				} else {
-					line.WriteString(m.styles.UnselectedPrefix.Render(m.keymap.UnselectedPrefix))
+					ps := m.styles.UnselectedPrefix
+					if hasCursorBg {
+						ps = ps.Background(cursorBg)
+					}
+					line.WriteString(ps.Render(m.keymap.UnselectedPrefix))
 				}
 			} else {
-				line.WriteString(" ")
+				// Single-select: one space spacer.
+				if hasCursorBg {
+					line.WriteString(m.styles.CursorRowBg.Render(" "))
+				} else {
+					line.WriteString(" ")
+				}
 			}
 
 			// Spinner (SpinnerItem only).
@@ -1279,18 +1471,90 @@ func (m *Model) renderList() string {
 				line.WriteByte(' ')
 			}
 
-			// Label with optional fuzzy-match highlights.
-			label := item.Label()
-			if len(ve.matchedIdxs) > 0 {
-				label = applyHighlights(label, ve.matchedIdxs, m.styles.MatchHighlight)
-			}
-			if isCursor {
-				line.WriteString(m.styles.CursorText.Render(label))
-			} else {
-				line.WriteString(m.styles.ItemText.Render(label))
+			// renderFrag renders one plain-text fragment (a word-wrapped line
+			// segment) with highlights remapped to its rune offset within the
+			// original label. Applies the correct text style + cursor bg.
+			renderFrag := func(text string, runeStart int) string {
+				fragRunes := len([]rune(text))
+				var localIdxs []int
+				for _, idx := range ve.matchedIdxs {
+					if idx >= runeStart && idx < runeStart+fragRunes {
+						localIdxs = append(localIdxs, idx-runeStart)
+					}
+				}
+				hlStyle := m.styles.MatchHighlight
+				if hasCursorBg {
+					hlStyle = hlStyle.Background(cursorBg)
+				}
+				t := text
+				if len(localIdxs) > 0 {
+					t = applyHighlights(t, localIdxs, hlStyle)
+				}
+				ts := m.styles.ItemText
+				if isCursor {
+					ts = m.styles.CursorText
+				}
+				if hasCursorBg {
+					ts = ts.Background(cursorBg)
+				}
+				return ts.Render(t)
 			}
 
-			sb.WriteString(line.String())
+			rawLabel := item.Label()
+
+			if m.wrapWord {
+				// Word-wrap: split plain label into lines, apply per-line highlights.
+				availW := max(1, m.vp.Width()-prefixWidth-markerW)
+				wlines, wstarts := wrapLabelLines(rawLabel, availW)
+
+				// First segment appended to the prefix in `line`.
+				line.WriteString(renderFrag(wlines[0], wstarts[0]))
+
+				// Emit first line (with trailing cursor-bg padding).
+				rowStr := line.String()
+				if hasCursorBg {
+					rowVisW := lipgloss.Width(rowStr)
+					if m.vp.Width() > rowVisW {
+						rowStr += m.styles.CursorRowBg.Render(strings.Repeat(" ", m.vp.Width()-rowVisW))
+					}
+				}
+				sb.WriteString(rowStr)
+
+				// Continuation lines.
+				indentW := prefixWidth + markerW
+				for wi := 1; wi < len(wlines); wi++ {
+					sb.WriteByte('\n')
+					if m.wrapSign != "" {
+						signW := lipgloss.Width(m.wrapSign)
+						if indentW > signW {
+							sb.WriteString(strings.Repeat(" ", indentW-signW))
+						}
+						sb.WriteString(m.styles.WrapSign.Render(m.wrapSign))
+					} else {
+						sb.WriteString(strings.Repeat(" ", indentW))
+					}
+					contStr := renderFrag(wlines[wi], wstarts[wi])
+					if hasCursorBg {
+						contVisW := indentW + lipgloss.Width(wlines[wi])
+						if m.vp.Width() > contVisW {
+							contStr += m.styles.CursorRowBg.Render(strings.Repeat(" ", m.vp.Width()-contVisW))
+						}
+					}
+					sb.WriteString(contStr)
+				}
+			} else {
+				// Single-line rendering.
+				line.WriteString(renderFrag(rawLabel, 0))
+
+				rowStr := line.String()
+				if hasCursorBg {
+					rowVisW := lipgloss.Width(rowStr)
+					if m.vp.Width() > rowVisW {
+						rowStr += m.styles.CursorRowBg.Render(strings.Repeat(" ", m.vp.Width()-rowVisW))
+					}
+				}
+				sb.WriteString(rowStr)
+			}
 		}
 
 		if i < len(entries)-1 {
@@ -1299,6 +1563,29 @@ func (m *Model) renderList() string {
 	}
 
 	return sb.String()
+}
+
+// renderMatchInfo returns a styled match-count string such as "42/1000"
+// according to the current [InfoStyle]. Returns an empty string when the style
+// is [InfoHidden] or there are no items.
+func (m *Model) renderMatchInfo() string {
+	if m.infoStyle == InfoHidden {
+		return ""
+	}
+	total := len(m.items) - m.headerLines
+	if total <= 0 {
+		return ""
+	}
+	// Subtract header lines that are headers (non-selectable) from total.
+	// Use the simpler: total selectable items vs matched selectable items.
+	totalSel := 0
+	for i := m.headerLines; i < len(m.items); i++ {
+		if !m.items[i].IsHeader() {
+			totalSel++
+		}
+	}
+	matched := len(m.selectableIdxs)
+	return m.styles.Help.Render(fmt.Sprintf("  %d/%d", matched, totalSel))
 }
 
 // renderHelp returns a compact help line.
@@ -1358,13 +1645,25 @@ func (m *Model) resize() {
 		return
 	}
 
-	// Fixed rows consumed by the input, title, and help line.
+	// Effective dimensions after subtracting the outer border frame (if any).
+	effW := m.width
+	effH := m.height
+	if m.showOuterBorder {
+		effW = max(1, effW-m.outerBorderStyle.GetHorizontalFrameSize())
+		effH = max(1, effH-m.outerBorderStyle.GetVerticalFrameSize())
+	}
+
+	// Fixed rows consumed by the input, title, info, and help line.
 	fixedRows := helpLines
 	if !m.hideInput {
 		fixedRows += inputLines
 		if m.showInputBorder {
 			fixedRows += m.styles.InputBorder.GetVerticalFrameSize()
 		}
+	}
+	// Match-count info line (when not hidden).
+	if m.infoStyle != InfoHidden {
+		fixedRows++
 	}
 	// List title only takes a row when there is no list border (with a border
 	// the title is embedded in the top border line, not a separate row).
@@ -1387,8 +1686,8 @@ func (m *Model) resize() {
 
 	// Input width: use inputWidth override when set, otherwise full width.
 	if !m.hideInput {
-		iw := m.width
-		if m.inputWidth > 0 && m.inputWidth < m.width {
+		iw := effW
+		if m.inputWidth > 0 && m.inputWidth < effW {
 			iw = m.inputWidth
 		}
 		if m.showInputBorder {
@@ -1402,8 +1701,8 @@ func (m *Model) resize() {
 	}
 
 	if m.previewFunc == nil || m.hidePreview {
-		vpH := max(minVPLines, m.height-fixedRows)
-		vpW := max(1, m.width-listBorderH)
+		vpH := max(minVPLines, effH-fixedRows)
+		vpW := max(1, effW-listBorderH)
 		m.vp.SetHeight(vpH)
 		m.vp.SetWidth(vpW)
 		m.vp.SetContent(m.renderList())
@@ -1420,7 +1719,7 @@ func (m *Model) resize() {
 
 	switch m.previewPos {
 	case PreviewRight:
-		vpH := max(minVPLines, m.height-fixedRows)
+		vpH := max(minVPLines, effH-fixedRows)
 
 		// Horizontal allocation: list area | optional sep | preview area.
 		// Explicit previewWidth overrides the percentage if set.
@@ -1432,12 +1731,12 @@ func (m *Model) resize() {
 		if m.previewWidth > 0 {
 			prevAreaW = m.previewWidth
 		} else {
-			prevAreaW = m.width * m.previewSize / 100
+			prevAreaW = effW * m.previewSize / 100
 		}
 		if prevAreaW < 8 {
 			prevAreaW = 8
 		}
-		listAreaW := max(1, m.width-prevAreaW-sepW)
+		listAreaW := max(1, effW-prevAreaW-sepW)
 
 		// Viewport widths = area width minus their respective border frames.
 		m.vp.SetHeight(vpH)
@@ -1446,7 +1745,7 @@ func (m *Model) resize() {
 		m.previewVP.SetWidth(max(8, prevAreaW-prevBorderH))
 
 	case PreviewBottom:
-		totalH := max(2, m.height-fixedRows-1) // -1 for ─── separator row
+		totalH := max(2, effH-fixedRows-1) // -1 for ─── separator row
 
 		// Explicit previewHeight overrides the percentage if set.
 		var prevAreaH int
@@ -1461,9 +1760,9 @@ func (m *Model) resize() {
 		listAreaH := max(minVPLines, totalH-prevAreaH)
 
 		m.vp.SetHeight(listAreaH)
-		m.vp.SetWidth(max(1, m.width-listBorderH))
+		m.vp.SetWidth(max(1, effW-listBorderH))
 		m.previewVP.SetHeight(max(minVPLines, prevAreaH-previewTitleH-prevBorderV))
-		m.previewVP.SetWidth(max(8, m.width-prevBorderH))
+		m.previewVP.SetWidth(max(8, effW-prevBorderH))
 	}
 
 	m.vp.SetContent(m.renderList())
@@ -1495,4 +1794,53 @@ func applyHighlights(label string, idxs []int, style lipgloss.Style) string {
 	ranges = append(ranges, lipgloss.NewRange(start, end, style))
 
 	return lipgloss.StyleRanges(label, ranges...)
+}
+
+// wrapLabelLines splits a plain-text label into word-wrapped lines, each no
+// wider than maxW runes. It returns the lines and the rune offset into the
+// original label where each line starts. This lets callers remap highlight
+// indices to per-line positions.
+//
+// Hard-break: if a single word exceeds maxW, it is broken at exactly maxW runes.
+func wrapLabelLines(label string, maxW int) (lines []string, starts []int) {
+	if maxW <= 0 {
+		return []string{label}, []int{0}
+	}
+	runes := []rune(label)
+	n := len(runes)
+	if n <= maxW {
+		return []string{label}, []int{0}
+	}
+
+	lineStart := 0
+	for lineStart < n {
+		end := lineStart + maxW
+		if end >= n {
+			lines = append(lines, string(runes[lineStart:]))
+			starts = append(starts, lineStart)
+			break
+		}
+		// Find the last space at or before end (within the current line).
+		breakAt := -1
+		for j := end; j > lineStart; j-- {
+			if runes[j] == ' ' {
+				breakAt = j
+				break
+			}
+		}
+		if breakAt <= lineStart {
+			// No space found; hard-break at maxW.
+			lines = append(lines, string(runes[lineStart:end]))
+			starts = append(starts, lineStart)
+			lineStart = end
+		} else {
+			lines = append(lines, string(runes[lineStart:breakAt]))
+			starts = append(starts, lineStart)
+			lineStart = breakAt + 1 // skip the space
+		}
+	}
+	if len(lines) == 0 {
+		return []string{label}, []int{0}
+	}
+	return lines, starts
 }

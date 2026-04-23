@@ -35,6 +35,15 @@ type KeyMap struct {
 	// Only active when a preview function is set.
 	TogglePreview key.Binding
 
+	// ToggleWrap toggles character-level soft-wrapping of long list rows.
+	ToggleWrap key.Binding
+
+	// ToggleWrapWord toggles word-level wrapping of long list rows.
+	ToggleWrapWord key.Binding
+
+	// TogglePreviewWrapWord toggles word-level wrapping in the preview pane.
+	TogglePreviewWrapWord key.Binding
+
 	// CursorPrefix is the glyph rendered on the cursor row (default "❯ ").
 	CursorPrefix string
 
@@ -57,7 +66,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Down, k.Up, k.Home, k.End},
 		{k.Toggle, k.ToggleAndNext, k.SelectAll},
 		{k.PreviewDown, k.PreviewUp, k.PreviewPageDown, k.PreviewPageUp, k.PreviewTop, k.PreviewBottom},
-		{k.ToggleInput, k.TogglePreview, k.Submit, k.Quit, k.Abort},
+		{k.ToggleInput, k.TogglePreview, k.ToggleWrap, k.ToggleWrapWord, k.TogglePreviewWrapWord, k.Submit, k.Quit, k.Abort},
 	}
 }
 
@@ -139,6 +148,18 @@ func DefaultKeyMap() KeyMap {
 		TogglePreview: key.NewBinding(
 			key.WithKeys("ctrl+/"),
 			key.WithHelp("ctrl+/", "toggle preview"),
+		),
+		ToggleWrap: key.NewBinding(
+			key.WithKeys("alt+/"),
+			key.WithHelp("alt+/", "toggle wrap"),
+		),
+		ToggleWrapWord: key.NewBinding(
+			key.WithKeys("alt+w"),
+			key.WithHelp("alt+w", "toggle word wrap"),
+		),
+		TogglePreviewWrapWord: key.NewBinding(
+			key.WithKeys("alt+shift+w"),
+			key.WithHelp("alt+shift+w", "toggle preview word wrap"),
 		),
 		CursorPrefix:     "❯ ",
 		SelectedPrefix:   "◉ ",

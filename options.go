@@ -3,6 +3,7 @@ package bfzf
 import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 )
 
@@ -392,5 +393,118 @@ func WithMarkerGlyphs(selected, unselected string) Option {
 	return func(m *Model) {
 		m.keymap.SelectedPrefix = selected
 		m.keymap.UnselectedPrefix = unselected
+	}
+}
+
+// WithWrapWord enables word-level wrapping of long item labels in the list.
+// Each label is split into logical lines at word boundaries, fitting within
+// the list viewport width. Continuation lines are indented to align with the
+// label start, with an optional wrap indicator set via [WithWrapSign].
+// Equivalent to fzf's --wrap --wrap-sign with word-wrap mode.
+func WithWrapWord() Option {
+	return func(m *Model) {
+		m.wrapWord = true
+		m.wrapList = false
+		m.vp.SoftWrap = false
+	}
+}
+
+// WithWrap enables character-level soft-wrapping of long item labels in the
+// list viewport (using the viewport's built-in SoftWrap mode).
+// Word wrap (--wrap-word) takes precedence when both are set.
+func WithWrap() Option {
+	return func(m *Model) {
+		if !m.wrapWord {
+			m.wrapList = true
+			m.vp.SoftWrap = true
+		}
+	}
+}
+
+// WithWrapSign sets the glyph prepended to continuation lines when word-wrap
+// is enabled ([WithWrapWord]). It is styled with [Styles.WrapSign].
+// Default: no sign (empty string).
+func WithWrapSign(sign string) Option {
+	return func(m *Model) {
+		m.wrapSign = sign
+	}
+}
+
+// WithPreviewWrapWord enables word-level soft-wrapping in the preview pane.
+// Equivalent to fzf's --preview-window wrap-word.
+func WithPreviewWrapWord() Option {
+	return func(m *Model) {
+		m.previewWrapWord = true
+		m.previewVP.SoftWrap = true
+		sign := m.previewWrapSign
+		if sign == "" {
+			// Apply wrapping without a gutter sign — default SoftWrap handles linebreaks.
+			return
+		}
+		signW := lipgloss.Width(sign)
+		m.previewVP.LeftGutterFunc = func(ctx viewport.GutterContext) string {
+			if ctx.Soft {
+				return sign
+			}
+			return string(make([]byte, signW)) // ASCII space filler
+		}
+	}
+}
+
+// WithPreviewWrapSign sets the glyph displayed on soft-wrapped continuation
+// lines in the preview pane (e.g. "↩"). When non-empty this is shown in the
+// left gutter of the preview viewport. Requires [WithPreviewWrapWord].
+// Equivalent to fzf's --preview-wrap-sign.
+func WithPreviewWrapSign(sign string) Option {
+	return func(m *Model) {
+		m.previewWrapSign = sign
+		if m.previewWrapWord && sign != "" {
+			signW := lipgloss.Width(sign)
+			spaces := make([]byte, signW)
+			for i := range spaces {
+				spaces[i] = ' '
+			}
+			spaceStr := string(spaces)
+			m.previewVP.LeftGutterFunc = func(ctx viewport.GutterContext) string {
+				if ctx.Soft {
+					return sign
+				}
+				return spaceStr
+			}
+		}
+	}
+}
+
+// WithInfoStyle sets where the match count / info text is displayed.
+// Use [InfoDefault] (match count above the list) or [InfoHidden] (suppressed).
+func WithInfoStyle(s InfoStyle) Option {
+	return func(m *Model) {
+		m.infoStyle = s
+	}
+}
+
+// WithOuterBorder wraps the entire picker in a lipgloss border.
+// Pass a border type such as [lipgloss.RoundedBorder], [lipgloss.NormalBorder],
+// etc. The border colour can be customised via [WithColor] ("outer-border" key).
+// Equivalent to fzf's --border.
+func WithOuterBorder(b lipgloss.Border) Option {
+	return func(m *Model) {
+		m.showOuterBorder = true
+		if m.outerBorderStyle.GetBorderStyle() == (lipgloss.Border{}) {
+			m.outerBorderStyle = lipgloss.NewStyle().
+				Border(b).
+				BorderForeground(lipgloss.Color("240"))
+		} else {
+			m.outerBorderStyle = m.outerBorderStyle.Border(b)
+		}
+	}
+}
+
+// WithNoColor disables all ANSI colour output by replacing every Styles field
+// with an empty (colourless) lipgloss.Style. Equivalent to fzf's --no-color.
+func WithNoColor() Option {
+	return func(m *Model) {
+		m.noColor = true
+		m.styles = Styles{}
 	}
 }

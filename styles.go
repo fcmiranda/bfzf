@@ -96,6 +96,16 @@ type Styles struct {
 	// PreviewScrollbarThumb styles the scrollbar thumb character (┃) rendered on
 	// the right edge of the preview viewport.
 	PreviewScrollbarThumb lipgloss.Style
+
+	// CursorRowBg provides the background fill style for the full-width cursor
+	// row highlight (fzf-style selection bar). The background colour is applied
+	// to each segment of the cursor row and to any trailing space padding so that
+	// the highlight spans the entire list width. Leave zero-value to disable.
+	CursorRowBg lipgloss.Style
+
+	// WrapSign styles the glyph prepended to each continuation line when word /
+	// character wrap is enabled in the list viewport (default "↩ ").
+	WrapSign lipgloss.Style
 }
 
 // DefaultStyles returns an opinionated dark-terminal style set.
@@ -166,6 +176,12 @@ func DefaultStyles() Styles {
 
 		PreviewScrollbarThumb: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")),
+
+		CursorRowBg: lipgloss.NewStyle().
+			Background(lipgloss.Color("236")),
+
+		WrapSign: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")),
 	}
 }
 
