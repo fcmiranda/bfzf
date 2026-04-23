@@ -173,8 +173,8 @@ func parseFlags() config {
 	var bindSpec multiString
 	flag.Var(&bindSpec, "bind", `runtime key binding key:action (repeatable, e.g. "ctrl+/:toggle-preview")`)
 	flag.BoolVar(&cfg.wrapWord, "wrap-word", false, "enable word-level wrapping of long item labels in the list")
-	flag.StringVar(&cfg.wrapSign, "wrap-sign", "", `glyph prepended to continuation lines when --wrap-word is active (e.g. "↩ ")`)
-	flag.StringVar(&cfg.previewWrapSign, "preview-wrap-sign", "", `glyph shown on soft-wrapped continuation lines in preview pane (e.g. "↩")`)
+	flag.StringVar(&cfg.wrapSign, "wrap-sign", "oo", `glyph prepended to continuation lines when --wrap-word is active (e.g. "↩ ")`)
+	flag.StringVar(&cfg.previewWrapSign, "preview-wrap-sign", "oo", `glyph shown on soft-wrapped continuation lines in preview pane (e.g. "↩")`)
 	flag.BoolVar(&cfg.infoHidden, "no-info", false, "hide the match-count info line")
 	flag.StringVar(&cfg.outerBorder, "border", "", `wrap entire picker in a border: rounded (default when flag set), sharp, bold, block, double`)
 	flag.BoolVar(&cfg.noColor, "no-color", false, "disable all ANSI colour output")

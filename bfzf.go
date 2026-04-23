@@ -1398,8 +1398,10 @@ func (m *Model) renderListPane() string {
 
 // renderPreviewPane builds the preview panel.
 // When a preview border is enabled, the item title and line count are
-// embedded in the top border line (fzf-style). Without a border, a title
-// row above the viewport is used.
+// embedded in the top border line (fzf-style) and the scrollbar is placed in
+// the right border column so that content is never truncated. Without a
+// border, a title row above the viewport is used and the scrollbar overlays
+// the last content column (existing behaviour).
 func (m *Model) renderPreviewPane() string {
 	var titleStr string
 	if m.cursorPos >= 0 && m.cursorPos < len(m.selectableIdxs) {
@@ -1411,14 +1413,18 @@ func (m *Model) renderPreviewPane() string {
 	lineCount := m.renderPreviewLineCount()
 
 	vpView := m.previewVP.View()
-	vpView = m.renderPreviewWithScrollbar(vpView)
 
 	if m.showPreviewBorder {
-		// Title + line count both go in the top border line.
-		return titledBorder(vpView, titleStr, lineCount, m.styles.PreviewBorder)
+		// Render the border first (content unmodified), then overlay the
+		// scrollbar on the right border │ column.  This preserves the full
+		// content width and keeps the scrollbar visually in the frame rather
+		// than inside the text (where it blends into plain output).
+		bordered := titledBorder(vpView, titleStr, lineCount, m.styles.PreviewBorder)
+		return m.renderScrollbarOnBorder(bordered)
 	}
 
-	// No border: title row + line count above content.
+	// No border: overlay scrollbar on the last content column and add title row.
+	vpView = m.renderPreviewWithScrollbar(vpView)
 	var titleRow string
 	if titleStr != "" || lineCount != "" {
 		titleRow = titleStr + lineCount
@@ -1442,9 +1448,49 @@ func (m *Model) renderPreviewLineCount() string {
 	return m.styles.PreviewLineCount.Render(fmt.Sprintf("%d/%d", current, total))
 }
 
+// renderScrollbarOnBorder overlays the scrollbar on the right border │
+// characters of an already-bordered pane string.  The scrollbar thumb (┃)
+// and track (│) replace the right-border │ in the content rows only; the top
+// and bottom border corners are left untouched.  Content inside the border is
+// never truncated.
+func (m *Model) renderScrollbarOnBorder(bordered string) string {
+	total := m.previewVP.TotalLineCount()
+	vpH := m.previewVP.Height()
+	yOffset := m.previewVP.YOffset()
+	if total <= vpH || vpH == 0 {
+		return bordered
+	}
+
+	thumbSize := max(1, vpH*vpH/total)
+	maxOffset := total - vpH
+	thumbPos := 0
+	if maxOffset > 0 {
+		thumbPos = yOffset * (vpH - thumbSize) / maxOffset
+	}
+
+	lines := strings.Split(bordered, "\n")
+	// Lines: index 0 = top border, 1..vpH = content rows, vpH+1 = bottom border.
+	for row := 1; row <= vpH && row < len(lines); row++ {
+		contentRow := row - 1 // 0-indexed within viewport
+		var sc string
+		if contentRow >= thumbPos && contentRow < thumbPos+thumbSize {
+			sc = m.styles.PreviewScrollbarThumb.Render("┃")
+		} else {
+			sc = m.styles.PreviewScrollbar.Render("│")
+		}
+		// Replace the last visual character (right border │) with the scrollbar.
+		w := lipgloss.Width(lines[row])
+		if w > 0 {
+			lines[row] = ansi.Truncate(lines[row], w-1, "") + sc
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // renderPreviewWithScrollbar overlays a 1-char scrollbar on the rightmost
-// column of the viewport view. Returns vpView unchanged when all content fits
-// without scrolling.
+// column of the viewport view.  Used for the no-border layout only; see
+// renderScrollbarOnBorder for the bordered layout.
+// Returns vpView unchanged when all content fits without scrolling.
 func (m *Model) renderPreviewWithScrollbar(vpView string) string {
 	total := m.previewVP.TotalLineCount()
 	vpH := m.previewVP.Height()
@@ -1965,7 +2011,14 @@ func (m *Model) resize() {
 
 		// Mouse hit-testing coordinates.
 		m.dividerScreenX = xOff + listAreaW
-		m.scrollbarScreenX = xOff + listAreaW + m.previewVP.Width()
+		// When the preview border is active the scrollbar lives in the right
+		// border column (one column past the inner content); otherwise it lives
+		// at the last inner content column (no border case).
+		if m.showPreviewBorder {
+			m.scrollbarScreenX = xOff + listAreaW + m.previewVP.Width() + 1
+		} else {
+			m.scrollbarScreenX = xOff + listAreaW + m.previewVP.Width()
+		}
 		// Preview viewport content starts one row below the pane top (border or title).
 		m.previewVPStartY = sY + 1
 		m.previewVPEndY = sY + m.previewVP.Height()
@@ -2005,8 +2058,12 @@ func (m *Model) resize() {
 		// Preview VP content starts after: list area + list border + separator + preview title/border-top.
 		m.previewVPStartY = sY + listAreaH + listBorderV + 1 + 1
 		m.previewVPEndY = m.previewVPStartY + m.previewVP.Height() - 1
-		// Scrollbar is on the rightmost column of the preview viewport.
-		m.scrollbarScreenX = xOff + m.previewVP.Width()
+		// Scrollbar: in the right border column when bordered, last content column otherwise.
+		if m.showPreviewBorder {
+			m.scrollbarScreenX = xOff + m.previewVP.Width() + 1
+		} else {
+			m.scrollbarScreenX = xOff + m.previewVP.Width()
+		}
 		m.dividerScreenX = -1 // vertical divider n/a for bottom layout
 	}
 
