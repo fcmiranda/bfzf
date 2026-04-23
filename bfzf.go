@@ -496,6 +496,42 @@ type Model struct {
 
 	// noColor disables ANSI colour output by zeroing all styles.
 	noColor bool
+
+	// ── AltScreen ────────────────────────────────────────────────────────────
+
+	// useAltScreen controls whether the program renders in the alternate screen
+	// buffer (default true).  When true, quitting bfzf leaves no residue in the
+	// terminal scrollback.  Set to false via WithNoClear() for inline/embedded use.
+	useAltScreen bool
+
+	// ── Mouse interaction state ────────────────────────────────────────────────
+
+	// splitPanelY is the absolute terminal row where the list/preview split
+	// panel starts.  Updated in resize() for mouse hit-testing.
+	splitPanelY int
+
+	// previewVPStartY / previewVPEndY are the absolute terminal rows of the
+	// first and last preview-viewport content rows.  Updated in resize().
+	previewVPStartY int
+	previewVPEndY   int
+
+	// scrollbarScreenX is the screen column of the preview scrollbar.
+	// Set to -1 when there is no visible scrollbar.
+	scrollbarScreenX int
+
+	// dividerScreenX is the screen column of the list/preview separator.
+	// Set to -1 when there is no separator (no preview, or preview hidden).
+	dividerScreenX int
+
+	// — scrollbar drag state —
+	scrollDragging    bool
+	scrollDragStartY  int
+	scrollDragStartOff int
+
+	// — pane resize drag state —
+	paneResizing        bool
+	paneResizeDragX0    int
+	paneResizePreviewSz int // previewSize at drag start
 }
 
 // New creates a new Model with the provided items and options.
@@ -513,21 +549,25 @@ func New(items []Item, opts ...Option) Model {
 	ti.Prompt = "❯ "
 
 	m := Model{
-		Prompt:         "❯ ",
-		Placeholder:    "Filter...",
-		Limit:          1,
-		items:          items,
-		spinners:       make(map[int]spinner.Model),
-		selected:       make(map[int]struct{}),
-		selectableIdxs: make([]int, 0, len(items)),
-		cursorPos:      0,
-		input:          ti,
-		vp:             viewport.New(viewport.WithWidth(80), viewport.WithHeight(10)),
-		styles:         DefaultStyles(),
-		keymap:         DefaultKeyMap(),
-		previewSize:    40,
-		lastPreviewIdx: -1,
-		sortResults:    true,
+		Prompt:           "❯ ",
+		Placeholder:      "Filter...",
+		Limit:            1,
+		items:            items,
+		spinners:         make(map[int]spinner.Model),
+		selected:         make(map[int]struct{}),
+		selectableIdxs:   make([]int, 0, len(items)),
+		cursorPos:        0,
+		input:            ti,
+		vp:               viewport.New(viewport.WithWidth(80), viewport.WithHeight(10)),
+		styles:           DefaultStyles(),
+		keymap:           DefaultKeyMap(),
+		previewSize:      40,
+		lastPreviewIdx:   -1,
+		sortResults:      true,
+		heightPercent:    50,   // default: 50% of terminal height (fzf-like inline mode)
+		useAltScreen:     true, // default: use altscreen so quit leaves no scrollback residue
+		scrollbarScreenX: -1,
+		dividerScreenX:   -1,
 	}
 
 	// Extract spinner configs from items implementing SpinnerItem.
@@ -726,16 +766,101 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-	}
 
-	// Mouse wheel: scroll the preview viewport.
-	if mw, ok := msg.(tea.MouseWheelMsg); ok && m.previewFunc != nil {
-		switch mw.Mouse().Button {
-		case tea.MouseWheelUp:
-			m.previewVP.SetYOffset(m.previewVP.YOffset() - m.previewVP.MouseWheelDelta)
-		case tea.MouseWheelDown:
-			m.previewVP.SetYOffset(m.previewVP.YOffset() + m.previewVP.MouseWheelDelta)
+	// ── Mouse events ─────────────────────────────────────────────────────────
+
+	case tea.MouseWheelMsg:
+		if m.previewFunc != nil && !m.hidePreview {
+			switch msg.Mouse().Button {
+			case tea.MouseWheelUp:
+				m.previewVP.SetYOffset(m.previewVP.YOffset() - m.previewVP.MouseWheelDelta)
+			case tea.MouseWheelDown:
+				m.previewVP.SetYOffset(m.previewVP.YOffset() + m.previewVP.MouseWheelDelta)
+			}
 		}
+
+	case tea.MouseClickMsg:
+		if m.previewFunc != nil && !m.hidePreview {
+			mx := msg.Mouse()
+			if mx.Button == tea.MouseLeft {
+				// ── Scrollbar click: jump to position and begin drag ──────────────
+				if mx.X == m.scrollbarScreenX &&
+					mx.Y >= m.previewVPStartY && mx.Y <= m.previewVPEndY {
+					total := m.previewVP.TotalLineCount()
+					vpH := m.previewVP.Height()
+					if total > vpH && vpH > 0 {
+						frac := float64(mx.Y-m.previewVPStartY) / float64(vpH)
+						if frac > 1 {
+							frac = 1
+						}
+						m.previewVP.SetYOffset(int(frac * float64(total-vpH)))
+					}
+					m.scrollDragging = true
+					m.scrollDragStartY = mx.Y
+					m.scrollDragStartOff = m.previewVP.YOffset()
+				}
+				// ── Divider click: begin pane resize (PreviewRight only) ──────────
+				if m.previewPos == PreviewRight &&
+					mx.X == m.dividerScreenX &&
+					mx.Y >= m.splitPanelY && mx.Y <= m.previewVPEndY {
+					m.paneResizing = true
+					m.paneResizeDragX0 = mx.X
+					m.paneResizePreviewSz = m.previewSize
+				}
+			}
+		}
+
+	case tea.MouseMotionMsg:
+		mx := msg.Mouse()
+		if mx.Button == tea.MouseLeft {
+			// ── Scroll drag ───────────────────────────────────────────────────────
+			if m.scrollDragging && m.previewFunc != nil && !m.hidePreview {
+				total := m.previewVP.TotalLineCount()
+				vpH := m.previewVP.Height()
+				if total > vpH && vpH > 0 {
+					frac := float64(mx.Y-m.previewVPStartY) / float64(vpH)
+					if frac < 0 {
+						frac = 0
+					} else if frac > 1 {
+						frac = 1
+					}
+					m.previewVP.SetYOffset(int(frac * float64(total-vpH)))
+				}
+			}
+			// ── Pane resize drag (PreviewRight) ───────────────────────────────────
+			if m.paneResizing && m.previewPos == PreviewRight {
+				effW := m.width
+				xOff := 0
+				if m.showOuterBorder {
+					effW = max(1, effW-m.outerBorderStyle.GetHorizontalFrameSize())
+					xOff = m.outerBorderStyle.GetHorizontalFrameSize() / 2
+				}
+				sepW := 1
+				if m.showPreviewBorder {
+					sepW = 0
+				}
+				// New preview width = space to the right of the mouse X.
+				newPrevW := effW - (mx.X - xOff) - sepW
+				if newPrevW < 8 {
+					newPrevW = 8
+				} else if newPrevW > effW-8 {
+					newPrevW = effW - 8
+				}
+				newPct := newPrevW * 100 / effW
+				if newPct < 10 {
+					newPct = 10
+				} else if newPct > 90 {
+					newPct = 90
+				}
+				m.previewSize = newPct
+				m.previewWidth = 0 // clear any fixed-width override
+				m.resize()
+			}
+		}
+
+	case tea.MouseReleaseMsg:
+		m.scrollDragging = false
+		m.paneResizing = false
 	}
 
 	// Update text input for non-key messages (cursor blink, etc.).
@@ -774,8 +899,9 @@ func (m Model) View() tea.View {
 		return tea.NewView("")
 	}
 	v := tea.NewView(m.render())
-	// Enable cell-motion mouse tracking so scroll-wheel events are reported.
+	// Enable cell-motion mouse tracking so scroll-wheel and click events are reported.
 	v.MouseMode = tea.MouseModeCellMotion
+	v.AltScreen = m.useAltScreen
 	return v
 }
 
@@ -1350,6 +1476,10 @@ func (m *Model) renderPreviewWithScrollbar(vpView string) string {
 //	╭─ leftTitle ───────────── rightTitle ─╮
 //	│  content                             │
 //	╰──────────────────────────────────────╯
+//
+// Each border segment is rendered with the border foreground colour separately
+// so that ANSI resets inside leftTitle/rightTitle do not bleed into the fill
+// characters (─) producing a colour mismatch.
 func titledBorder(content, leftTitle, rightTitle string, style lipgloss.Style) string {
 	rendered := style.Render(content)
 	if leftTitle == "" && rightTitle == "" {
@@ -1361,27 +1491,41 @@ func titledBorder(content, leftTitle, rightTitle string, style lipgloss.Style) s
 	}
 	outerW := lipgloss.Width(lines[0])
 	b := style.GetBorderStyle()
-	lineStyle := lipgloss.NewStyle().Foreground(style.GetBorderTopForeground())
+	// bdr renders a plain border-character string in the border foreground colour.
+	bdr := lipgloss.NewStyle().Foreground(style.GetBorderTopForeground()).Render
 
-	// Inner fill = outer width minus two corner characters.
-	innerW := outerW - 2
+	innerW := outerW - 2 // subtract two corner characters
 
-	// Build left segment: "─ leftTitle ─"
-	leftSeg := ""
+	// Visual widths of the title segments (ANSI stripped by lipgloss.Width).
+	leftSegW := 0
 	if leftTitle != "" {
-		leftSeg = b.Top + " " + leftTitle + " " + b.Top
+		leftSegW = 2 + lipgloss.Width(leftTitle) + 2 // "─ " + title + " ─"
 	}
-	// Build right segment: "─ rightTitle ─"
-	rightSeg := ""
+	rightSegW := 0
 	if rightTitle != "" {
-		rightSeg = b.Top + " " + rightTitle + " " + b.Top
+		rightSegW = 2 + lipgloss.Width(rightTitle) + 2 // "─ " + count + " ─"
 	}
-	leftW := lipgloss.Width(leftSeg)
-	rightW := lipgloss.Width(rightSeg)
-	fillW := max(0, innerW-leftW-rightW)
+	fillW := max(0, innerW-leftSegW-rightSegW)
 
-	newTop := lineStyle.Render(b.TopLeft + leftSeg + strings.Repeat(b.Top, fillW) + rightSeg + b.TopRight)
-	return newTop + "\n" + lines[1]
+	// Build the top line by rendering each border segment separately.
+	// This prevents inner ANSI resets (from title styles) from resetting the
+	// border foreground colour on the fill dashes.
+	var top strings.Builder
+	top.WriteString(bdr(b.TopLeft))
+	if leftTitle != "" {
+		top.WriteString(bdr(b.Top + " "))
+		top.WriteString(leftTitle) // already carries its own ANSI styling
+		top.WriteString(bdr(" " + b.Top))
+	}
+	top.WriteString(bdr(strings.Repeat(b.Top, fillW)))
+	if rightTitle != "" {
+		top.WriteString(bdr(b.Top + " "))
+		top.WriteString(rightTitle) // already carries its own ANSI styling
+		top.WriteString(bdr(" " + b.Top))
+	}
+	top.WriteString(bdr(b.TopRight))
+
+	return top.String() + "\n" + lines[1]
 }
 
 // renderList builds the string content for the viewport.
@@ -1700,11 +1844,37 @@ func (m *Model) resize() {
 		}
 	}
 
+	// Compute splitPanelY: absolute row in the terminal where the list/preview
+	// split panel begins.  Used for mouse hit-testing.
+	sY := 0
+	if m.showOuterBorder {
+		sY++ // outer border top line
+	}
+	if !m.hideInput {
+		sY += inputLines
+		if m.showInputBorder {
+			sY += m.styles.InputBorder.GetVerticalFrameSize()
+		}
+	}
+	if m.infoStyle != InfoHidden {
+		sY++
+	}
+	sY += m.headerLines
+	m.splitPanelY = sY
+
 	if m.previewFunc == nil || m.hidePreview {
 		vpH := max(minVPLines, effH-fixedRows)
 		vpW := max(1, effW-listBorderH)
 		m.vp.SetHeight(vpH)
 		m.vp.SetWidth(vpW)
+		// Ensure the list border spans the full area width.
+		if m.showListBorder {
+			m.styles.ListBorder = m.styles.ListBorder.Width(vpW)
+		}
+		m.scrollbarScreenX = -1
+		m.dividerScreenX = -1
+		m.previewVPStartY = -1
+		m.previewVPEndY = -1
 		m.vp.SetContent(m.renderList())
 		return
 	}
@@ -1717,9 +1887,21 @@ func (m *Model) resize() {
 		previewTitleH = 0
 	}
 
+	// Outer border left offset (for mouse coordinate translation).
+	xOff := 0
+	if m.showOuterBorder {
+		xOff = m.outerBorderStyle.GetHorizontalFrameSize() / 2
+	}
+
 	switch m.previewPos {
 	case PreviewRight:
 		vpH := max(minVPLines, effH-fixedRows)
+
+		// Vertical frame added by the list border (0 when no list border).
+		listBorderV := 0
+		if m.showListBorder {
+			listBorderV = m.styles.ListBorder.GetVerticalFrameSize()
+		}
 
 		// Horizontal allocation: list area | optional sep | preview area.
 		// Explicit previewWidth overrides the percentage if set.
@@ -1741,8 +1923,26 @@ func (m *Model) resize() {
 		// Viewport widths = area width minus their respective border frames.
 		m.vp.SetHeight(vpH)
 		m.vp.SetWidth(max(1, listAreaW-listBorderH))
-		m.previewVP.SetHeight(max(minVPLines, vpH-previewTitleH-prevBorderV))
+		// Preview height accounts for the list border frame so both panes
+		// are the same total height when placed side by side.
+		m.previewVP.SetHeight(max(minVPLines, vpH+listBorderV-previewTitleH-prevBorderV))
 		m.previewVP.SetWidth(max(8, prevAreaW-prevBorderH))
+
+		// Set explicit inner widths on border styles so they always span the
+		// full area width regardless of content length (fixes right-border gap).
+		if m.showListBorder {
+			m.styles.ListBorder = m.styles.ListBorder.Width(m.vp.Width())
+		}
+		if m.showPreviewBorder {
+			m.styles.PreviewBorder = m.styles.PreviewBorder.Width(m.previewVP.Width())
+		}
+
+		// Mouse hit-testing coordinates.
+		m.dividerScreenX = xOff + listAreaW
+		m.scrollbarScreenX = xOff + listAreaW + m.previewVP.Width()
+		// Preview viewport content starts one row below the pane top (border or title).
+		m.previewVPStartY = sY + 1
+		m.previewVPEndY = sY + m.previewVP.Height()
 
 	case PreviewBottom:
 		totalH := max(2, effH-fixedRows-1) // -1 for ─── separator row
@@ -1763,6 +1963,25 @@ func (m *Model) resize() {
 		m.vp.SetWidth(max(1, effW-listBorderH))
 		m.previewVP.SetHeight(max(minVPLines, prevAreaH-previewTitleH-prevBorderV))
 		m.previewVP.SetWidth(max(8, effW-prevBorderH))
+
+		// Ensure borders span the full width.
+		if m.showListBorder {
+			m.styles.ListBorder = m.styles.ListBorder.Width(m.vp.Width())
+		}
+		if m.showPreviewBorder {
+			m.styles.PreviewBorder = m.styles.PreviewBorder.Width(m.previewVP.Width())
+		}
+
+		listBorderV := 0
+		if m.showListBorder {
+			listBorderV = m.styles.ListBorder.GetVerticalFrameSize()
+		}
+		// Preview VP content starts after: list area + list border + separator + preview title/border-top.
+		m.previewVPStartY = sY + listAreaH + listBorderV + 1 + 1
+		m.previewVPEndY = m.previewVPStartY + m.previewVP.Height() - 1
+		// Scrollbar is on the rightmost column of the preview viewport.
+		m.scrollbarScreenX = xOff + m.previewVP.Width()
+		m.dividerScreenX = -1 // vertical divider n/a for bottom layout
 	}
 
 	m.vp.SetContent(m.renderList())

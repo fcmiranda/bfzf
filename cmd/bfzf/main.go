@@ -118,6 +118,7 @@ type config struct {
 	infoHidden       bool
 	outerBorder      string // "rounded","sharp","bold","block","double","none"
 	noColor          bool
+	noClear          bool   // disable alternate screen (leave output in scrollback)
 }
 
 // multiString is a flag.Value that accumulates repeated --bind values.
@@ -177,6 +178,7 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.infoHidden, "no-info", false, "hide the match-count info line")
 	flag.StringVar(&cfg.outerBorder, "border", "", `wrap entire picker in a border: rounded (default when flag set), sharp, bold, block, double`)
 	flag.BoolVar(&cfg.noColor, "no-color", false, "disable all ANSI colour output")
+	flag.BoolVar(&cfg.noClear, "no-clear", false, "disable alternate screen: leave picker output in scrollback on exit (default: alt-screen is used)")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -594,6 +596,9 @@ func main() {
 	}
 	if cfg.noColor {
 		opts = append(opts, bfzf.WithNoColor())
+	}
+	if cfg.noClear {
+		opts = append(opts, bfzf.WithNoClear())
 	}
 	for _, bindSpec := range cfg.bind {
 		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix)

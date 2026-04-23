@@ -508,3 +508,14 @@ func WithNoColor() Option {
 		m.styles = Styles{}
 	}
 }
+
+// WithNoClear disables the alternate screen buffer so that bfzf renders inline
+// and leaves its output in the terminal scrollback when it exits.
+// By default bfzf uses the alternate screen buffer so quitting leaves no
+// residue (equivalent to piping through fzf).  Pass this option when you embed
+// bfzf inside a larger Bubble Tea program or want persistent scrollback output.
+func WithNoClear() Option {
+	return func(m *Model) {
+		m.useAltScreen = false
+	}
+}

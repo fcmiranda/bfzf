@@ -24,6 +24,10 @@
 - **Cursor row highlight** — full-width background highlight on the focused item (fzf-style)
 - **`--border TYPE`** — wrap entire picker in a border (`rounded`, `sharp`, `bold`, `block`, `double`)
 - **`--no-color`** — disable all ANSI colour output
+- **Altscreen by default** — picker runs in the alternate screen buffer; quit leaves no residue in scrollback (`--no-clear` to opt out)
+- **50% height by default** — picker occupies the top 50% of the screen; pass `--height N` or `--height N%` to override
+- **Mouse scrollbar drag** — click or drag the preview scrollbar to scroll
+- **Mouse divider drag** — click and drag the list/preview separator to resize panes
 - **CLI Tool** — pipe stdin or pass positional arguments, just like `fzf`
 - **Live Preview** — run any shell command on the focused item; split pane (right or bottom)
 - **Preview field selectors** — `{-1}` extracts the last field (filename from `ls -l`), `{n}` for nth field
@@ -187,6 +191,7 @@ EOF
 | `-no-info` | false | Hide the match-count info line |
 | `-border type` | — | Wrap entire picker in a border: `rounded` (default), `sharp`, `bold`, `block`, `double`, `none` |
 | `-no-color` | false | Disable all ANSI colour output |
+| `-no-clear` | false | Render inline (no alternate screen); picker output stays in scrollback on exit |
 
 ### Preview field selectors
 
