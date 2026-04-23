@@ -317,7 +317,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case matchesAny(msg, m.keymap.Abort):
 			m.quitting = true
-			return m, tea.Interrupt
+			return m, tea.Quit
 
 		case matchesAny(msg, m.keymap.Quit):
 			m.quitting = true
@@ -1006,11 +1006,17 @@ func (m *Model) resize() {
 
 	// Input width accounts for optional input border.
 	if !m.hideInput {
-		inputW := m.width
 		if m.showInputBorder {
-			inputW -= m.styles.InputBorder.GetHorizontalFrameSize()
+			// Set a fixed outer width on the border style so lipgloss always
+			// draws the right border edge at column m.width.  Also shrink the
+			// textinput to fill the inner content area.
+			m.styles.InputBorder = m.styles.InputBorder.Width(
+				m.width - m.styles.InputBorder.GetHorizontalFrameSize(),
+			)
+			m.input.SetWidth(m.width - m.styles.InputBorder.GetHorizontalFrameSize())
+		} else {
+			m.input.SetWidth(m.width)
 		}
-		m.input.SetWidth(inputW)
 	}
 
 	if m.previewFunc == nil {
