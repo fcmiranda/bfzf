@@ -31,6 +31,10 @@ type KeyMap struct {
 	// When hidden, the current filter is cleared.
 	ToggleInput key.Binding
 
+	// TogglePreview shows/hides the preview pane at runtime.
+	// Only active when a preview function is set.
+	TogglePreview key.Binding
+
 	// CursorPrefix is the glyph rendered on the cursor row (default "❯ ").
 	CursorPrefix string
 
@@ -53,7 +57,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Down, k.Up, k.Home, k.End},
 		{k.Toggle, k.ToggleAndNext, k.SelectAll},
 		{k.PreviewDown, k.PreviewUp, k.PreviewPageDown, k.PreviewPageUp, k.PreviewTop, k.PreviewBottom},
-		{k.ToggleInput, k.Submit, k.Quit, k.Abort},
+		{k.ToggleInput, k.TogglePreview, k.Submit, k.Quit, k.Abort},
 	}
 }
 
@@ -131,6 +135,10 @@ func DefaultKeyMap() KeyMap {
 		ToggleInput: key.NewBinding(
 			key.WithKeys("ctrl+f"),
 			key.WithHelp("ctrl+f", "toggle search input"),
+		),
+		TogglePreview: key.NewBinding(
+			key.WithKeys("ctrl+/"),
+			key.WithHelp("ctrl+/", "toggle preview"),
 		),
 		CursorPrefix:     "❯ ",
 		SelectedPrefix:   "◉ ",

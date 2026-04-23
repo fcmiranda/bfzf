@@ -99,6 +99,26 @@ type config struct {
 	cursor          string
 	marker          string
 	popup           string
+	// new fzf-parity flags
+	reverse          bool
+	exact            bool
+	query            string
+	print0           bool
+	headerLines      int
+	previewWindow    string // "hidden" → start hidden
+	markerSelected   string
+	markerUnselected string
+	inputWidth       int
+	bind             []string // raw "key:action" strings
+}
+
+// multiString is a flag.Value that accumulates repeated --bind values.
+type multiString []string
+
+func (ms *multiString) String() string  { return strings.Join(*ms, ", ") }
+func (ms *multiString) Set(s string) error {
+	*ms = append(*ms, s)
+	return nil
 }
 
 func parseFlags() config {
@@ -131,6 +151,18 @@ func parseFlags() config {
 	flag.IntVar(&cfg.previewWidth, "preview-width", 0, "preview pane width in columns (0 = use --preview-size %)")
 	flag.IntVar(&cfg.previewHeight, "preview-height", 0, "preview pane height in lines (0 = use --preview-size %)")
 	flag.StringVar(&cfg.colorSpec, "color", "", `color spec: key:value[,key:value…] (e.g. "fg+:212,border:99")`)
+	// fzf-parity flags
+	flag.BoolVar(&cfg.reverse, "reverse", false, "render list in reverse order (last item at top)")
+	flag.BoolVar(&cfg.exact, "exact", false, "exact match mode: disable fuzzy, use substring matching")
+	flag.StringVar(&cfg.query, "query", "", "initial query string for pre-filtering")
+	flag.BoolVar(&cfg.print0, "print0", false, "output NUL-separated results instead of newline-separated")
+	flag.IntVar(&cfg.headerLines, "header-lines", 0, "treat first N input lines as a pinned non-scrolling header (excluded from matching)")
+	flag.StringVar(&cfg.previewWindow, "preview-window", "", `preview window options; "hidden" starts with preview hidden (ctrl+/ to toggle)`)
+	flag.StringVar(&cfg.markerSelected, "marker-selected", "", `raw glyph for selected items in multi-select mode (e.g. "▶ ")`)
+	flag.StringVar(&cfg.markerUnselected, "marker-unselected", "", "raw glyph for unselected items in multi-select mode")
+	flag.IntVar(&cfg.inputWidth, "input-width", 0, "constrain search input to N columns (0 = full width)")
+	var bindSpec multiString
+	flag.Var(&bindSpec, "bind", `runtime key binding key:action (repeatable, e.g. "ctrl+/:toggle-preview")`)
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -146,6 +178,13 @@ func parseFlags() config {
 		fmt.Fprintln(os.Stderr, "  {1}   first field")
 		fmt.Fprintln(os.Stderr, "  {n}   nth field (1-based)")
 		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Bind actions:")
+		fmt.Fprintln(os.Stderr, "  toggle-preview       toggle the preview pane")
+		fmt.Fprintln(os.Stderr, "  clear-query          clear the search input")
+		fmt.Fprintln(os.Stderr, "  abort                quit without selecting")
+		fmt.Fprintln(os.Stderr, "  accept               confirm current selection")
+		fmt.Fprintln(os.Stderr, "  reload(cmd)          re-run shell command and replace items")
+		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, `  ls -l | bfzf --preview 'stat {-1}'   # {-1} = filename column`)
 		fmt.Fprintln(os.Stderr, `  ls    | bfzf --preview 'cat {}'`)
@@ -153,9 +192,12 @@ func parseFlags() config {
 		fmt.Fprintln(os.Stderr, `  printf '@Loading\nReady' | bfzf --spinner-prefix '@'`)
 		fmt.Fprintln(os.Stderr, `  cat items.json | bfzf --json`)
 		fmt.Fprintln(os.Stderr, `  bfzf -m item1 item2 item3`)
+		fmt.Fprintln(os.Stderr, `  ls | bfzf --reverse --query go`)
+		fmt.Fprintln(os.Stderr, `  ls | bfzf --preview 'cat {}' --preview-window hidden --bind ctrl+/:toggle-preview`)
 	}
 
 	flag.Parse()
+	cfg.bind = []string(bindSpec)
 	return cfg
 }
 
@@ -494,6 +536,36 @@ func main() {
 			fmt.Fprintf(os.Stderr, "bfzf: unknown marker style %q (circles|squares|filled|arrows|checkmarks|stars|diamonds)\n", cfg.marker)
 		}
 	}
+	// New fzf-parity options.
+	if cfg.reverse {
+		opts = append(opts, bfzf.WithReverse())
+	}
+	if cfg.exact {
+		opts = append(opts, bfzf.WithExact())
+	}
+	if cfg.query != "" {
+		opts = append(opts, bfzf.WithQuery(cfg.query))
+	}
+	if cfg.headerLines > 0 {
+		opts = append(opts, bfzf.WithHeaderLines(cfg.headerLines))
+	}
+	if cfg.previewWindow == "hidden" {
+		opts = append(opts, bfzf.WithPreviewHidden())
+	}
+	if cfg.markerSelected != "" || cfg.markerUnselected != "" {
+		opts = append(opts, bfzf.WithMarkerGlyphs(cfg.markerSelected, cfg.markerUnselected))
+	}
+	if cfg.inputWidth > 0 {
+		opts = append(opts, bfzf.WithInputWidth(cfg.inputWidth))
+	}
+	for _, bindSpec := range cfg.bind {
+		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bfzf:", err)
+			os.Exit(1)
+		}
+		opts = append(opts, bfzf.WithBind(keyStr, fn))
+	}
 	// Popup mode: after items are ready, re-launch inside tmux/Zellij popup.
 	if cfg.popup != "" && os.Getenv("BFZF_IN_POPUP") == "" {
 		if err := runPopup(cfg.popup, items, cfg.groupPrefix, cfg.spinnerPrefix, stdinUsed); err != nil {
@@ -554,8 +626,18 @@ func main() {
 	}
 
 	w := bufio.NewWriter(os.Stdout)
-	for _, item := range selected {
-		fmt.Fprintln(w, item.Label())
+	for i, item := range selected {
+		if cfg.print0 {
+			fmt.Fprintf(w, "%s\x00", item.Label())
+		} else {
+			if i > 0 {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprint(w, item.Label())
+		}
+	}
+	if !cfg.print0 {
+		fmt.Fprintln(w) // trailing newline
 	}
 	_ = w.Flush()
 }
@@ -580,6 +662,58 @@ func parseHeightArg(s string) (abs int, pct int, ok bool) {
 		return 0, 0, false
 	}
 	return n, 0, true
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Bind helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+// parseBind parses a "key:action" string and returns the key string and a
+// BindFunc. Supported actions:
+//   - toggle-preview
+//   - clear-query
+//   - abort
+//   - accept
+//   - reload(shell-cmd)
+func parseBind(spec, groupPrefix, spinnerPrefix string) (string, bfzf.BindFunc, error) {
+	i := strings.Index(spec, ":")
+	if i < 0 {
+		return "", nil, fmt.Errorf("invalid --bind %q: expected key:action", spec)
+	}
+	keyStr := spec[:i]
+	action := strings.TrimSpace(spec[i+1:])
+	if keyStr == "" {
+		return "", nil, fmt.Errorf("invalid --bind %q: empty key", spec)
+	}
+	var fn bfzf.BindFunc
+	switch {
+	case action == "toggle-preview":
+		fn = bfzf.BindTogglePreview()
+	case action == "clear-query":
+		fn = bfzf.BindClearQuery()
+	case action == "abort":
+		fn = func(m *bfzf.Model) tea.Cmd { return m.Quit() }
+	case action == "accept":
+		fn = func(m *bfzf.Model) tea.Cmd { return m.ForceSubmit() }
+	case strings.HasPrefix(action, "reload(") && strings.HasSuffix(action, ")"):
+		reloadCmd := action[len("reload(") : len(action)-1]
+		fn = bfzf.BindReloadItems(func() []bfzf.Item {
+			out, err := exec.Command("sh", "-c", reloadCmd).Output() // #nosec G204
+			if err != nil {
+				return nil
+			}
+			var lines []string
+			for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			return parseItems(lines, groupPrefix, spinnerPrefix)
+		})
+	default:
+		return "", nil, fmt.Errorf("unrecognised bind action %q in %q", action, spec)
+	}
+	return keyStr, fn, nil
 }
 
 // ────────────────────────────────────────────────────────────────────────────

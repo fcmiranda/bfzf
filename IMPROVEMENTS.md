@@ -6,7 +6,7 @@ This document tracks fzf features not yet in bfzf, ordered roughly by value-to-e
 
 ## High priority
 
-### 1. `--reverse` — list order
+### 1. `--reverse` — list order ✅ DONE
 fzf can render the list top-to-bottom with the cursor starting at the top, or
 bottom-to-top (default in many setups) with the input at the bottom.
 bfzf always renders input-then-list top-to-bottom.
@@ -16,7 +16,7 @@ and positions the cursor at the top. Change scroll direction in `ensureCursorVis
 
 ---
 
-### 2. `--bind` — dynamic, runtime key binding
+### 2. `--bind` — dynamic, runtime key binding ✅ DONE
 fzf's `--bind key:action` is one of its most powerful features:
 reload items, execute shell commands, toggle UI panels, change query, etc.
 
@@ -26,7 +26,7 @@ reload items, execute shell commands, toggle UI panels, change query, etc.
 
 ---
 
-### 3. `--query STRING` — initial pre-filled filter
+### 3. `--query STRING` — initial pre-filled filter ✅ DONE
 fzf starts with `--query` already typed in the search box, enabling scripts to
 pre-filter to a likely match.
 
@@ -35,7 +35,7 @@ pre-filter to a likely match.
 
 ---
 
-### 4. `--exact` / exact-match tokens
+### 4. `--exact` / exact-match tokens ✅ DONE
 fzf supports `'token` (exact), `!token` (negate), `^prefix`, `suffix$` as special
 search operators within the query string.
 
@@ -44,7 +44,7 @@ apply these operators before/after the fuzzy pass.
 
 ---
 
-### 5. `--read0` / `--print0` — NUL-delimited I/O
+### 5. `--read0` / `--print0` — NUL-delimited I/O ✅ DONE
 fzf supports NUL (`\0`) as the record separator on both input and output, making
 it safe for filenames containing newlines. bfzf already has `--0` for input but
 does not expose a `--print0` flag for output.
@@ -54,7 +54,7 @@ items instead of `\n`.
 
 ---
 
-### 6. `--header-lines N` — treat first N input lines as a non-scrolling header
+### 6. `--header-lines N` — treat first N input lines as a non-scrolling header ✅ DONE
 fzf can pin the first N input lines as column headers above the list.
 
 **Scope**: Parse the first N items as `HeaderItem`s (or a dedicated `PinnedHeader`
@@ -63,7 +63,7 @@ fuzzy matching.
 
 ---
 
-### 7. `--preview-window hidden` + toggle
+### 7. `--preview-window hidden` + toggle ✅ DONE
 In fzf, `--preview-window hidden` starts with the preview hidden and `ctrl+/`
 toggles it.  bfzf always shows the preview when `WithPreview` is set.
 
@@ -72,7 +72,7 @@ Options: `WithPreviewHidden()`, `--preview-window hidden`, `--toggle-preview-key
 
 ---
 
-### 8. `--pointer STR` / `--marker STR` as single-char flags
+### 8. `--pointer STR` / `--marker STR` as single-char flags ✅ DONE
 fzf exposes `--pointer` (cursor row indicator) and `--marker` (selected-item glyph)
 as direct string flags separate from a style preset.  bfzf already has `--cursor`
 and `--marker` but `--marker` takes a style name rather than the raw glyphs.
@@ -260,4 +260,14 @@ browser URL-bar completion.
 
 ---
 
-_Last updated: 2026-04-22_
+_Last updated: 2026-04-23_
+
+---
+
+## Completed extras
+
+### Input filter width parameter ✅ DONE
+Allow callers to constrain the search input to a specific column count,
+enabling parent layouts where other UI elements share the same row.
+
+`WithInputWidth(n int) Option` and `--input-width N` CLI flag.

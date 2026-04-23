@@ -1,6 +1,7 @@
 package bfzf
 
 import (
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 )
@@ -311,5 +312,85 @@ func WithMarkerStyle(ms MarkerStyle) Option {
 	return func(m *Model) {
 		m.keymap.SelectedPrefix = ms.Selected
 		m.keymap.UnselectedPrefix = ms.Unselected
+	}
+}
+
+// WithReverse renders the list in reverse order within the viewport
+// (last item at the top, first at the bottom), equivalent to fzf's --reverse.
+func WithReverse() Option {
+	return func(m *Model) {
+		m.reverse = true
+	}
+}
+
+// WithExact disables fuzzy matching and treats all query tokens as exact
+// substring matches, equivalent to fzf's --exact flag.
+func WithExact() Option {
+	return func(m *Model) {
+		m.exact = true
+	}
+}
+
+// WithQuery sets an initial pre-filled search query, equivalent to
+// fzf's --query STRING. The filter is applied immediately in [New].
+func WithQuery(s string) Option {
+	return func(m *Model) {
+		m.input.SetValue(s)
+	}
+}
+
+// WithHeaderLines pins the first n items as a non-scrolling header above the
+// list viewport, equivalent to fzf's --header-lines N.
+// The pinned items are excluded from fuzzy matching and selection.
+func WithHeaderLines(n int) Option {
+	return func(m *Model) {
+		if n < 0 {
+			n = 0
+		}
+		m.headerLines = n
+	}
+}
+
+// WithPreviewHidden starts with the preview pane hidden even when a preview
+// function is set. The user can toggle it with [KeyMap.TogglePreview]
+// (default Ctrl+/), equivalent to fzf's --preview-window hidden.
+func WithPreviewHidden() Option {
+	return func(m *Model) {
+		m.hidePreview = true
+	}
+}
+
+// WithBind registers a runtime key binding: when keyStr is pressed, fn is
+// called with a pointer to the live Model.
+// keyStr uses the same format as key.WithKeys (e.g. "ctrl+/", "alt+p").
+// Use the BindTogglePreview, BindChangeQuery, BindClearQuery, and
+// BindReloadItems helpers to build common actions.
+func WithBind(keyStr string, fn BindFunc) Option {
+	return func(m *Model) {
+		m.bindActions = append(m.bindActions, bindEntry{
+			binding: key.NewBinding(key.WithKeys(keyStr)),
+			fn:      fn,
+		})
+	}
+}
+
+// WithInputWidth constrains the search text input to w columns.
+// The remaining row width is left blank, allowing other UI elements to
+// coexist on the same line in parent layouts.
+func WithInputWidth(w int) Option {
+	return func(m *Model) {
+		if w > 0 {
+			m.inputWidth = w
+		}
+	}
+}
+
+// WithMarkerGlyphs sets the raw glyph strings for selected/unselected items
+// in multi-select mode (fzf's --marker STR). Both strings should have equal
+// display widths to keep list columns aligned.
+func WithMarkerGlyphs(selected, unselected string) Option {
+	return func(m *Model) {
+		m.keymap.SelectedPrefix = selected
+		m.keymap.UnselectedPrefix = unselected
 	}
 }

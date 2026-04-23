@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -86,6 +87,148 @@ func NewItem(text string) SimpleItem { return SimpleItem{Text: text} }
 
 // NewHeader creates a [HeaderItem].
 func NewHeader(text string) HeaderItem { return HeaderItem{Text: text} }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Runtime key binding
+// ────────────────────────────────────────────────────────────────────────────
+
+// BindFunc is the action signature for runtime key bindings registered via
+// [WithBind]. It receives a pointer to the live Model and may return a
+// tea.Cmd to dispatch side-effects (e.g. reloading items).
+type BindFunc func(m *Model) tea.Cmd
+
+// BindTogglePreview returns a [BindFunc] that toggles the preview pane.
+func BindTogglePreview() BindFunc {
+	return func(m *Model) tea.Cmd {
+		if m.previewFunc == nil {
+			return nil
+		}
+		m.hidePreview = !m.hidePreview
+		m.resize()
+		return nil
+	}
+}
+
+// BindChangeQuery returns a [BindFunc] that replaces the search query.
+func BindChangeQuery(query string) BindFunc {
+	return func(m *Model) tea.Cmd {
+		m.input.SetValue(query)
+		m.updateFilter()
+		return nil
+	}
+}
+
+// BindClearQuery returns a [BindFunc] that clears the search query.
+func BindClearQuery() BindFunc { return BindChangeQuery("") }
+
+// BindReloadItems returns a [BindFunc] that replaces the item list with the
+// result of calling fn. The selection and filter are reset after reloading.
+func BindReloadItems(fn func() []Item) BindFunc {
+	return func(m *Model) tea.Cmd {
+		newItems := fn()
+		m.items = newItems
+		m.spinners = make(map[int]spinner.Model, len(newItems))
+		for i, item := range newItems {
+			if si, ok := item.(SpinnerItem); ok {
+				s := si.Spinner()
+				if s.Spinner.FPS == 0 {
+					s.Spinner = spinner.Dot
+				}
+				m.spinners[i] = s
+			}
+		}
+		m.selected = make(map[int]struct{})
+		m.cursorPos = 0
+		m.updateFilter()
+		return nil
+	}
+}
+
+// bindEntry pairs a key.Binding with a BindFunc for runtime dispatch.
+type bindEntry struct {
+	binding key.Binding
+	fn      BindFunc
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Search token types (fzf-compatible exact-match operators)
+// ────────────────────────────────────────────────────────────────────────────
+
+type searchKind int
+
+const (
+	searchFuzzy         searchKind = iota // normal fuzzy (default)
+	searchExact                           // 'text  → substring match
+	searchPrefix                          // ^text  → prefix match
+	searchSuffix                          // text$  → suffix match
+	searchNegate                          // !text  → exclude fuzzy matches
+	searchNegateExact                     // !'text → must NOT contain
+	searchNegatePrefix                    // !^text → must NOT have prefix
+	searchNegateSuffix                    // !text$ → must NOT have suffix
+)
+
+type searchToken struct {
+	kind  searchKind
+	value string
+}
+
+// parseSearchTokens splits query on whitespace and maps each token to its
+// kind according to fzf-compatible prefix/suffix operators.
+// When exactMode is true, bare tokens become searchExact instead of searchFuzzy.
+func parseSearchTokens(query string, exactMode bool) []searchToken {
+	parts := strings.Fields(query)
+	tokens := make([]searchToken, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		negate := strings.HasPrefix(p, "!")
+		if negate {
+			p = p[1:]
+		}
+		if p == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(p, "'"):
+			val := p[1:]
+			if negate {
+				tokens = append(tokens, searchToken{searchNegateExact, val})
+			} else {
+				tokens = append(tokens, searchToken{searchExact, val})
+			}
+		case strings.HasPrefix(p, "^"):
+			val := p[1:]
+			if negate {
+				tokens = append(tokens, searchToken{searchNegatePrefix, val})
+			} else {
+				tokens = append(tokens, searchToken{searchPrefix, val})
+			}
+		case strings.HasSuffix(p, "$"):
+			val := p[:len(p)-1]
+			if negate {
+				tokens = append(tokens, searchToken{searchNegateSuffix, val})
+			} else {
+				tokens = append(tokens, searchToken{searchSuffix, val})
+			}
+		default:
+			if negate {
+				if exactMode {
+					tokens = append(tokens, searchToken{searchNegateExact, p})
+				} else {
+					tokens = append(tokens, searchToken{searchNegate, p})
+				}
+			} else {
+				kind := searchFuzzy
+				if exactMode {
+					kind = searchExact
+				}
+				tokens = append(tokens, searchToken{kind, p})
+			}
+		}
+	}
+	return tokens
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Internal types
@@ -208,6 +351,38 @@ type Model struct {
 	// heightPercent, when > 0, sets height as a percentage of the terminal
 	// height on each WindowSizeMsg. Ignored when heightFixed is true.
 	heightPercent int
+
+	// ── Search ───────────────────────────────────────────────────────────────
+
+	// exact disables fuzzy matching; all tokens use substring matching instead.
+	exact bool
+
+	// ── Layout ───────────────────────────────────────────────────────────────
+
+	// reverse renders the visible list in reversed order within the viewport.
+	reverse bool
+
+	// ── Preview visibility ────────────────────────────────────────────────────
+
+	// hidePreview hides the preview pane even when previewFunc is set.
+	// Toggled at runtime with KeyMap.TogglePreview.
+	hidePreview bool
+
+	// ── Pinned header lines ───────────────────────────────────────────────────
+
+	// headerLines is the count of leading items kept as a non-scrolling
+	// pinned header above the list viewport (fzf's --header-lines N).
+	headerLines int
+
+	// ── Input width ───────────────────────────────────────────────────────────
+
+	// inputWidth, when > 0, limits the text-input to this many columns.
+	inputWidth int
+
+	// ── Runtime bind actions ──────────────────────────────────────────────────
+
+	// bindActions holds key-to-action pairs registered via [WithBind].
+	bindActions []bindEntry
 }
 
 // New creates a new Model with the provided items and options.
@@ -269,8 +444,8 @@ func New(items []Item, opts ...Option) Model {
 	// the model that New() returns. Init() still sends the cursor-blink cmd.
 	_ = m.input.Focus()
 
-	// Compute the initial (unfiltered) visible set.
-	m.buildVisibleAll()
+	// Compute initial visible set (respects WithQuery if set).
+	m.updateFilter()
 
 	return m
 }
@@ -313,6 +488,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyPressMsg:
+		// Runtime bind actions take priority over built-in keys.
+		if m.tryBindActions(msg, &cmds) {
+			break
+		}
+
 		// Global keys (always active).
 		switch {
 		case matchesAny(msg, m.keymap.Abort):
@@ -336,6 +516,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.previewVP.GotoTop()
 		case matchesAny(msg, m.keymap.PreviewBottom):
 			m.previewVP.GotoBottom()
+
+		case matchesAny(msg, m.keymap.TogglePreview) && m.previewFunc != nil:
+			m.hidePreview = !m.hidePreview
+			m.resize()
 
 		case matchesAny(msg, m.keymap.ToggleInput):
 			m.hideInput = !m.hideInput
@@ -478,6 +662,27 @@ func (m Model) Submitted() bool { return m.submitted }
 // Quitting reports whether the model is done (submitted or quit/aborted).
 func (m Model) Quitting() bool { return m.quitting }
 
+// Quit marks the model as quitting without submission and returns [tea.Quit].
+// Safe to call from a [BindFunc].
+func (m *Model) Quit() tea.Cmd {
+	m.quitting = true
+	return tea.Quit
+}
+
+// ForceSubmit selects the current item (single-select) or all toggled items
+// (multi-select), marks the model as submitted, and returns [tea.Quit].
+// Safe to call from a [BindFunc].
+func (m *Model) ForceSubmit() tea.Cmd {
+	if len(m.selectableIdxs) > 0 {
+		if m.Limit == 1 && m.cursorPos >= 0 {
+			m.selected[m.selectableIdxs[m.cursorPos]] = struct{}{}
+		}
+		m.submitted = true
+	}
+	m.quitting = true
+	return tea.Quit
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Filter helpers
 // ────────────────────────────────────────────────────────────────────────────
@@ -499,10 +704,14 @@ func (m *Model) updateFilter() {
 }
 
 // buildVisibleAll populates visible with every item (no filter, no highlights).
+// Items with index < headerLines are excluded (they are rendered as pinned header).
 func (m *Model) buildVisibleAll() {
 	m.visible = m.visible[:0]
 	m.selectableIdxs = m.selectableIdxs[:0]
 	for i, item := range m.items {
+		if i < m.headerLines {
+			continue
+		}
 		m.visible = append(m.visible, visibleEntry{
 			itemIdx:  i,
 			isHeader: item.IsHeader(),
@@ -513,16 +722,28 @@ func (m *Model) buildVisibleAll() {
 	}
 }
 
-// buildVisibleFiltered runs fuzzy matching and re-populates visible.
+// buildVisibleFiltered runs matching and re-populates visible.
+// Supports fzf-compatible search operators: 'exact, !negate, ^prefix, suffix$,
+// as well as multi-term fuzzy (all terms must independently match).
+// Items with index < headerLines are excluded from matching.
 // Headers missing any matching descendant are hidden.
 func (m *Model) buildVisibleFiltered(query string) {
-	// Collect selectable items with their item indices.
+	tokens := parseSearchTokens(query, m.exact)
+	if len(tokens) == 0 {
+		m.buildVisibleAll()
+		return
+	}
+
+	// Collect selectable items, skipping pinned header lines.
 	type sel struct {
 		itemIdx int
 		label   string
 	}
 	selectables := make([]sel, 0, len(m.items))
 	for i, item := range m.items {
+		if i < m.headerLines {
+			continue
+		}
 		if !item.IsHeader() {
 			selectables = append(selectables, sel{i, item.FilterValue()})
 		}
@@ -533,30 +754,130 @@ func (m *Model) buildVisibleFiltered(query string) {
 		return
 	}
 
-	// Run fuzzy matching on FilterValues.
 	labels := make([]string, len(selectables))
 	for i, s := range selectables {
 		labels[i] = s.label
 	}
-	var matches []fuzzy.Match
-	if m.sortResults {
-		matches = fuzzy.Find(query, labels)
-	} else {
-		matches = fuzzy.FindNoSort(query, labels)
+
+	// Separate fuzzy terms from special-operator tokens.
+	var fuzzyTerms []string
+	type specialTok struct {
+		kind searchKind
+		val  string
+	}
+	var specials []specialTok
+	for _, t := range tokens {
+		switch t.kind {
+		case searchFuzzy:
+			fuzzyTerms = append(fuzzyTerms, t.value)
+		default:
+			specials = append(specials, specialTok{t.kind, t.value})
+		}
 	}
 
-	// Build match index map: item index -> matched character positions.
+	// Run fuzzy matching: every term must match the same item independently.
+	// matchedFuzzy maps selectables-index → match positions from the first term.
+	type matchPos struct{ idxs []int }
+	var matchedFuzzy map[int]matchPos
+	if len(fuzzyTerms) > 0 {
+		var first []fuzzy.Match
+		if m.sortResults {
+			first = fuzzy.Find(fuzzyTerms[0], labels)
+		} else {
+			first = fuzzy.FindNoSort(fuzzyTerms[0], labels)
+		}
+		matchedFuzzy = make(map[int]matchPos, len(first))
+		for _, fm := range first {
+			matchedFuzzy[fm.Index] = matchPos{fm.MatchedIndexes}
+		}
+		for _, term := range fuzzyTerms[1:] {
+			var extra []fuzzy.Match
+			if m.sortResults {
+				extra = fuzzy.Find(term, labels)
+			} else {
+				extra = fuzzy.FindNoSort(term, labels)
+			}
+			set := make(map[int]struct{}, len(extra))
+			for _, fm := range extra {
+				set[fm.Index] = struct{}{}
+			}
+			for idx := range matchedFuzzy {
+				if _, ok := set[idx]; !ok {
+					delete(matchedFuzzy, idx)
+				}
+			}
+		}
+	}
+
+	// Build match index map: item index → matched char positions.
 	type matchData struct{ idxs []int }
-	matched := make(map[int]matchData, len(matches))
-	for _, fm := range matches {
-		itemIdx := selectables[fm.Index].itemIdx
-		matched[itemIdx] = matchData{fm.MatchedIndexes}
+	matched := make(map[int]matchData, len(selectables))
+
+	for si, s := range selectables {
+		// Fuzzy gate: if there were fuzzy terms, item must be in matchedFuzzy.
+		if matchedFuzzy != nil {
+			if _, ok := matchedFuzzy[si]; !ok {
+				continue
+			}
+		}
+
+		// Special-operator filters (all must pass).
+		lbl := strings.ToLower(s.label)
+		pass := true
+		for _, sp := range specials {
+			val := strings.ToLower(sp.val)
+			switch sp.kind {
+			case searchExact:
+				if !strings.Contains(lbl, val) {
+					pass = false
+				}
+			case searchPrefix:
+				if !strings.HasPrefix(lbl, val) {
+					pass = false
+				}
+			case searchSuffix:
+				if !strings.HasSuffix(lbl, val) {
+					pass = false
+				}
+			case searchNegate:
+				if len(fuzzy.Find(sp.val, []string{s.label})) > 0 {
+					pass = false
+				}
+			case searchNegateExact:
+				if strings.Contains(lbl, val) {
+					pass = false
+				}
+			case searchNegatePrefix:
+				if strings.HasPrefix(lbl, val) {
+					pass = false
+				}
+			case searchNegateSuffix:
+				if strings.HasSuffix(lbl, val) {
+					pass = false
+				}
+			}
+			if !pass {
+				break
+			}
+		}
+		if !pass {
+			continue
+		}
+
+		var idxs []int
+		if matchedFuzzy != nil {
+			idxs = matchedFuzzy[si].idxs
+		}
+		matched[s.itemIdx] = matchData{idxs}
 	}
 
-	// Build header-for-item map: item index -> preceding header index (-1 if none).
+	// Build header-for-item map: item index → preceding header index (-1 if none).
 	headerFor := make(map[int]int, len(m.items))
 	lastHeader := -1
 	for i, item := range m.items {
+		if i < m.headerLines {
+			continue
+		}
 		if item.IsHeader() {
 			lastHeader = i
 		} else {
@@ -572,10 +893,13 @@ func (m *Model) buildVisibleFiltered(query string) {
 		}
 	}
 
-	// Rebuild visible in original order.
+	// Rebuild visible in original order, skipping pinned header lines.
 	m.visible = m.visible[:0]
 	m.selectableIdxs = m.selectableIdxs[:0]
 	for i, item := range m.items {
+		if i < m.headerLines {
+			continue
+		}
 		if item.IsHeader() {
 			if _, ok := neededHeaders[i]; ok {
 				m.visible = append(m.visible, visibleEntry{
@@ -633,16 +957,22 @@ func (m *Model) ensureCursorVisible() {
 	}
 	cursorItemIdx := m.selectableIdxs[m.cursorPos]
 
-	// Find the viewport row of the cursor item.
-	viewportRow := -1
+	// Find the position in m.visible of the cursor item.
+	visibleRow := -1
 	for i, ve := range m.visible {
 		if !ve.isHeader && ve.itemIdx == cursorItemIdx {
-			viewportRow = i
+			visibleRow = i
 			break
 		}
 	}
-	if viewportRow < 0 {
+	if visibleRow < 0 {
 		return
+	}
+
+	// In reverse mode the rendered row index is flipped.
+	viewportRow := visibleRow
+	if m.reverse {
+		viewportRow = len(m.visible) - 1 - visibleRow
 	}
 
 	yOffset := m.vp.YOffset()
@@ -677,6 +1007,21 @@ func (m *Model) selectAll() {
 	}
 }
 
+// tryBindActions checks all registered runtime bindings against the key press
+// and calls any matching action. Returns true if a binding matched (consuming
+// the key so default handlers are skipped).
+func (m *Model) tryBindActions(msg tea.KeyPressMsg, cmds *[]tea.Cmd) bool {
+	for _, be := range m.bindActions {
+		if key.Matches(msg, be.binding) {
+			if cmd := be.fn(m); cmd != nil {
+				*cmds = append(*cmds, cmd)
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Rendering helpers
 // ────────────────────────────────────────────────────────────────────────────
@@ -686,6 +1031,7 @@ func (m *Model) selectAll() {
 func (m *Model) render() string {
 	helpStr := m.renderHelp()
 	listPane := m.renderListPane()
+	pinnedHeader := m.renderPinnedHeader()
 
 	// Compact helper: join non-empty strings with newlines.
 	join := func(parts ...string) string {
@@ -707,8 +1053,8 @@ func (m *Model) render() string {
 		}
 	}
 
-	if m.previewFunc == nil {
-		return join(inputView, listPane, helpStr)
+	if m.previewFunc == nil || m.hidePreview {
+		return join(inputView, pinnedHeader, listPane, helpStr)
 	}
 
 	previewPane := m.renderPreviewPane()
@@ -725,14 +1071,14 @@ func (m *Model) render() string {
 			)
 			splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, bar, previewPane)
 		}
-		return join(inputView, splitPanel, helpStr)
+		return join(inputView, pinnedHeader, splitPanel, helpStr)
 
 	case PreviewBottom:
 		sep := m.styles.PreviewBorder.Render(strings.Repeat("─", m.width))
-		return join(inputView, listPane, sep, previewPane, helpStr)
+		return join(inputView, pinnedHeader, listPane, sep, previewPane, helpStr)
 	}
 
-	return join(inputView, listPane, helpStr)
+	return join(inputView, pinnedHeader, listPane, helpStr)
 }
 
 // renderListPane builds the list side: optional titled border + viewport.
@@ -888,7 +1234,17 @@ func (m *Model) renderList() string {
 	prefixWidth := lipgloss.Width(m.keymap.CursorPrefix)
 	var sb strings.Builder
 
-	for i, ve := range m.visible {
+	// In reverse mode render items bottom-to-top.
+	entries := m.visible
+	if m.reverse {
+		rev := make([]visibleEntry, len(m.visible))
+		for i, e := range m.visible {
+			rev[len(m.visible)-1-i] = e
+		}
+		entries = rev
+	}
+
+	for i, ve := range entries {
 		item := m.items[ve.itemIdx]
 
 		if ve.isHeader {
@@ -937,7 +1293,7 @@ func (m *Model) renderList() string {
 			sb.WriteString(line.String())
 		}
 
-		if i < len(m.visible)-1 {
+		if i < len(entries)-1 {
 			sb.WriteByte('\n')
 		}
 	}
@@ -956,10 +1312,33 @@ func (m *Model) renderHelp() string {
 		}
 	}
 	if m.previewFunc != nil {
-		hints = append(hints, "shift+↑/↓ preview scroll")
+		if !m.hidePreview {
+			hints = append(hints, "shift+↑/↓ preview scroll")
+		}
+		hints = append(hints, "ctrl+/ toggle preview")
 	}
 	hints = append(hints, "esc quit", "ctrl+c abort")
 	return m.styles.Help.Render(strings.Join(hints, "  ·  "))
+}
+
+// renderPinnedHeader returns the non-scrolling header rows rendered from the
+// first m.headerLines items. Returns an empty string when headerLines is 0.
+func (m *Model) renderPinnedHeader() string {
+	if m.headerLines == 0 {
+		return ""
+	}
+	end := m.headerLines
+	if end > len(m.items) {
+		end = len(m.items)
+	}
+	var sb strings.Builder
+	for i := 0; i < end; i++ {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(m.styles.Header.Render(m.items[i].Label()))
+	}
+	return sb.String()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -992,6 +1371,8 @@ func (m *Model) resize() {
 	if m.listTitle != "" && !m.showListBorder {
 		fixedRows++
 	}
+	// Each pinned header line consumes one row.
+	fixedRows += m.headerLines
 
 	// Border frame sizes (0 when the respective border is disabled).
 	listBorderH := 0
@@ -1004,22 +1385,23 @@ func (m *Model) resize() {
 		prevBorderV = m.styles.PreviewBorder.GetVerticalFrameSize()
 	}
 
-	// Input width accounts for optional input border.
+	// Input width: use inputWidth override when set, otherwise full width.
 	if !m.hideInput {
+		iw := m.width
+		if m.inputWidth > 0 && m.inputWidth < m.width {
+			iw = m.inputWidth
+		}
 		if m.showInputBorder {
-			// Set a fixed outer width on the border style so lipgloss always
-			// draws the right border edge at column m.width.  Also shrink the
-			// textinput to fill the inner content area.
 			m.styles.InputBorder = m.styles.InputBorder.Width(
-				m.width - m.styles.InputBorder.GetHorizontalFrameSize(),
+				iw - m.styles.InputBorder.GetHorizontalFrameSize(),
 			)
-			m.input.SetWidth(m.width - m.styles.InputBorder.GetHorizontalFrameSize())
+			m.input.SetWidth(iw - m.styles.InputBorder.GetHorizontalFrameSize())
 		} else {
-			m.input.SetWidth(m.width)
+			m.input.SetWidth(iw)
 		}
 	}
 
-	if m.previewFunc == nil {
+	if m.previewFunc == nil || m.hidePreview {
 		vpH := max(minVPLines, m.height-fixedRows)
 		vpW := max(1, m.width-listBorderH)
 		m.vp.SetHeight(vpH)

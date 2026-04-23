@@ -1,8 +1,9 @@
-// Example program demonstrating bfzf features:
+// Example program demonstrating bfzf features including high-priority fzf parity:
 //   - Grouped options with non-selectable headers
 //   - Options with animated spinners (indicating in-progress state)
 //   - Multi-select mode
 //   - Fuzzy search with highlighted matches
+//   - --reverse, --query, --exact, --header-lines, WithPreviewHidden, WithBind
 package main
 
 import (
@@ -128,11 +129,26 @@ func customStyles() bfzf.Styles {
 func main() {
 	items := buildItems()
 
+	// Demonstrate several fzf-parity features:
+	//   WithReverse()        → list renders bottom-to-top
+	//   WithQuery("go")      → pre-filter to items matching "go"
+	//   WithPreviewHidden()  → preview starts hidden; ctrl+/ toggles it
+	//   WithBind             → extra runtime key actions
+	//   WithHeaderLines(0)   → no pinned header (items[0] is a HeaderItem,
+	//                          so the group header already acts as a section divider)
 	m := bfzf.New(
 		items,
 		bfzf.WithLimit(0), // unlimited multi-select
 		bfzf.WithPlaceholder("Search languages…"),
 		bfzf.WithStyles(customStyles()),
+		bfzf.WithReverse(),
+		bfzf.WithQuery("go"),
+		bfzf.WithPreview(func(item bfzf.Item) string {
+			return "Preview: " + item.Label()
+		}),
+		bfzf.WithPreviewHidden(),
+		bfzf.WithBind("ctrl+/", bfzf.BindTogglePreview()),
+		bfzf.WithBind("ctrl+x", bfzf.BindClearQuery()),
 	)
 
 	p := tea.NewProgram(m)

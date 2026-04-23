@@ -5,6 +5,16 @@
 ## Features
 
 - **Real-time fuzzy search** with match highlighting
+- **fzf-compatible query operators** — `'exact`, `^prefix`, `suffix$`, `!negate`, multi-term AND
+- **`--reverse`** — render list bottom-to-top
+- **`--query STRING`** — pre-filled initial filter
+- **`--exact`** — switch to substring/exact match mode
+- **`--header-lines N`** — pinned non-scrolling column header above the list
+- **`--preview-window hidden`** — start with preview hidden; `Ctrl+/` to toggle
+- **`--bind key:action`** — runtime bindings: `toggle-preview`, `clear-query`, `reload(cmd)`, `accept`, `abort`
+- **`--print0`** — NUL-separated output for filenames with spaces
+- **`--input-width N`** — constrain the search input width
+- **`--marker-selected` / `--marker-unselected`** — custom glyph strings for multi-select markers
 - **CLI Tool** — pipe stdin or pass positional arguments, just like `fzf`
 - **Live Preview** — run any shell command on the focused item; split pane (right or bottom)
 - **Preview field selectors** — `{-1}` extracts the last field (filename from `ls -l`), `{n}` for nth field
@@ -48,6 +58,33 @@ eza -l | ./bfzf --preview 'file {-1}'
 
 # Preview split at the bottom (default is right)
 ls | ./bfzf --preview 'cat {}' --preview-position bottom --preview-size 50
+
+# Reverse list order + pre-filled query
+ls | ./bfzf --reverse --query go
+
+# Exact match mode
+ls | ./bfzf --exact --query '.go'
+
+# Hidden preview pane, toggle with ctrl+/
+ls | ./bfzf --preview 'cat {}' --preview-window hidden
+
+# Runtime key binding: toggle preview with alt+p
+ls | ./bfzf --preview 'cat {}' --bind 'alt+p:toggle-preview'
+
+# Reload items with a bind action
+ls | ./bfzf --bind 'ctrl+r:reload(find . -name "*.go")'
+
+# Pin first line as a non-scrolling header
+ls -l | ./bfzf --header-lines 1 --preview 'stat {-1}'
+
+# NUL-separated output (pipeline-safe)
+ls | ./bfzf --print0 | xargs -0 cat
+
+# Constrain search input width
+ls | ./bfzf --input-width 40
+
+# Custom multi-select glyphs
+ls | ./bfzf -m --marker-selected '▶ ' --marker-unselected '  '
 
 # Group headers (lines starting with prefix become non-selectable headers)
 printf '#Fruits\nApple\nBanana\n#Veg\nCarrot' | ./bfzf --group-prefix '#'
@@ -107,6 +144,16 @@ EOF
 | `-preview-width n` | 0 (use %) | Preview pane width in columns (overrides `-preview-size` when > 0; right layout) |
 | `-preview-height n` | 0 (use %) | Preview pane height in lines (overrides `-preview-size` when > 0; bottom layout) |
 | `-color spec` | — | Comma-separated `key:value` color overrides — see [Color spec](#color-spec) |
+| `-reverse` | false | Render list in reverse order (last item at top) |
+| `-exact` | false | Exact match mode: disable fuzzy, use substring matching |
+| `-query STRING` | — | Initial query string for pre-filtering |
+| `-print0` | false | Output NUL-separated results instead of newline-separated |
+| `-header-lines N` | 0 | Treat first N input lines as a pinned non-scrolling header (excluded from matching) |
+| `-preview-window opts` | — | Preview window options; `hidden` starts with preview hidden (`ctrl+/` to toggle) |
+| `-marker-selected str` | — | Raw glyph for selected items in multi-select mode (e.g. `▶ `) |
+| `-marker-unselected str` | — | Raw glyph for unselected items in multi-select mode |
+| `-input-width N` | 0 | Constrain search input to N columns (0 = full width) |
+| `-bind key:action` | — | Runtime key binding (repeatable); actions: `toggle-preview`, `clear-query`, `abort`, `accept`, `reload(cmd)` |
 
 ### Preview field selectors
 
@@ -253,7 +300,8 @@ m := bfzf.New(items)
 | `Shift+↑` / `Shift+↓` | Scroll preview up / down | `km.PreviewUp` / `km.PreviewDown` |
 | `Shift+PgUp` / `Shift+PgDn` | Scroll preview by page | `km.PreviewPageUp` / `km.PreviewPageDown` |
 | `Shift+Home` / `Shift+End` | Jump to preview top / bottom | `km.PreviewTop` / `km.PreviewBottom` |
-| `Ctrl+F` | Toggle search input on/off (clears filter when hidden) | `km.ToggleInput` |
+| `Ctrl+F` | Toggle search input on/off | `km.ToggleInput` |
+| `Ctrl+/` | Toggle preview pane on/off | `km.TogglePreview` |
 
 ### Theming / Style overrides
 
@@ -381,4 +429,189 @@ CLI equivalent:
 ```bash
 ls | ./bfzf --style full --color 'fg+:212,hl:220,border:99,preview-border:135' --preview 'cat {}'
 ```
+
+---
+
+## fzf-compatible features
+
+### `--reverse` — render list in reverse order
+
+```bash
+ls | ./bfzf --reverse
+ls | ./bfzf --reverse --query go   # pre-filtered
+```
+
+Library: `bfzf.WithReverse()`
+
+---
+
+### `--query STRING` — initial pre-filled filter
+
+```bash
+ls | ./bfzf --query go            # start with "go" already typed
+```
+
+Library: `bfzf.WithQuery("go")`
+
+---
+
+### `--exact` — exact / substring match mode
+
+Disables fuzzy matching; all query tokens become case-insensitive substring searches. Special operators still work in this mode.
+
+```bash
+ls | ./bfzf --exact
+ls | ./bfzf --exact --query '*.go'
+```
+
+Library: `bfzf.WithExact()`
+
+---
+
+### Exact-match operators (fzf-compatible query syntax)
+
+Even without `--exact`, special token prefixes change match semantics on a per-term basis:
+
+| Token | Meaning |
+|---|---|
+| `'word` | Exact substring match |
+| `^prefix` | Must start with `prefix` |
+| `suffix$` | Must end with `suffix` |
+| `!word` | Exclude fuzzy matches for `word` |
+| `!'word` | Must NOT contain `word` (exact negate) |
+| `!^word` | Must NOT start with `word` |
+| `!word$` | Must NOT end with `word` |
+
+Multiple tokens are ANDed: all must match independently.
+
+```bash
+# Files that contain "go" and don't end with ".sum"
+ls | ./bfzf --query "'go !.sum$"
+# Files starting with "cmd" that are not "main.go"
+ls | ./bfzf --query "^cmd !'main"
+```
+
+---
+
+### `--print0` — NUL-separated output
+
+Safe for filenames containing newlines or spaces.
+
+```bash
+ls | ./bfzf --print0 | xargs -0 cat
+```
+
+---
+
+### `--header-lines N` — pinned column headers
+
+The first N input lines are rendered as a non-scrolling header above the list and excluded from fuzzy matching.
+
+```bash
+# ls -l output: first line is "total …"; pin it as header
+ls -l | ./bfzf --header-lines 1 --preview 'stat {-1}'
+```
+
+Library: `bfzf.WithHeaderLines(1)`
+
+---
+
+### `--preview-window hidden` + `ctrl+/` toggle
+
+Start with the preview pane hidden; toggle it at any time with `Ctrl+/`.
+
+```bash
+ls | ./bfzf --preview 'cat {}' --preview-window hidden
+# custom toggle key:
+ls | ./bfzf --preview 'cat {}' --preview-window hidden --bind 'alt+p:toggle-preview'
+```
+
+Library:
+```go
+m := bfzf.New(items,
+    bfzf.WithPreview(previewFn),
+    bfzf.WithPreviewHidden(),
+)
+// Override toggle key:
+m := bfzf.New(items,
+    bfzf.WithPreview(previewFn),
+    bfzf.WithPreviewHidden(),
+    bfzf.WithKeyMapFunc(func(km *bfzf.KeyMap) {
+        km.TogglePreview = key.NewBinding(key.WithKeys("alt+p"), key.WithHelp("alt+p", "toggle preview"))
+    }),
+)
+```
+
+---
+
+### `--marker-selected` / `--marker-unselected` — raw glyph strings
+
+```bash
+ls | ./bfzf -m --marker-selected '▶ ' --marker-unselected '  '
+```
+
+Library: `bfzf.WithMarkerGlyphs("▶ ", "  ")`
+
+---
+
+### `--input-width N` — constrain search input width
+
+```bash
+ls | ./bfzf --input-width 40
+```
+
+Library: `bfzf.WithInputWidth(40)`
+
+---
+
+### `--bind key:action` — runtime key bindings
+
+| Action | Description |
+|---|---|
+| `toggle-preview` | Show/hide preview pane |
+| `clear-query` | Clear the search input |
+| `abort` | Quit without selecting |
+| `accept` | Confirm current selection |
+| `reload(cmd)` | Re-run shell command and replace item list |
+
+```bash
+ls | ./bfzf --preview 'cat {}' --bind 'ctrl+/:toggle-preview'
+ls | ./bfzf --bind 'ctrl+r:reload(find . -type f)'
+ls | ./bfzf --bind 'ctrl+x:abort' --bind 'alt+enter:accept'
+```
+
+Library:
+```go
+m := bfzf.New(items,
+    bfzf.WithBind("ctrl+/", bfzf.BindTogglePreview()),
+    bfzf.WithBind("ctrl+r", bfzf.BindReloadItems(func() []bfzf.Item {
+        out, _ := exec.Command("find", ".", "-type", "f").Output()
+        var items []bfzf.Item
+        for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+            items = append(items, bfzf.NewItem(line))
+        }
+        return items
+    })),
+    bfzf.WithBind("ctrl+space", bfzf.BindChangeQuery("myprefix")),
+)
+```
+
+---
+
+### Updated Key Bindings
+
+| Key | Action | Overridable via `WithKeyMapFunc` |
+|---|---|---|
+| `↑` / `↓` | Navigate | `km.Up` / `km.Down` |
+| `Enter` | Confirm selection | `km.Submit` |
+| `Tab` / `Shift+Tab` | Toggle item (multi-select) | `km.ToggleAndNext` / `km.ToggleAndPrev` |
+| `Ctrl+A` | Select all visible (unlimited multi-select) | `km.SelectAll` |
+| `Esc` | Quit without selecting | `km.Quit` |
+| `Ctrl+C` | Abort | `km.Abort` |
+| `Home` / `End` | Jump to start / end | `km.Home` / `km.End` |
+| `Shift+↑` / `Shift+↓` | Scroll preview up / down | `km.PreviewUp` / `km.PreviewDown` |
+| `Shift+PgUp` / `Shift+PgDn` | Scroll preview by page | `km.PreviewPageUp` / `km.PreviewPageDown` |
+| `Shift+Home` / `Shift+End` | Jump to preview top / bottom | `km.PreviewTop` / `km.PreviewBottom` |
+| `Ctrl+F` | Toggle search input on/off (clears filter when hidden) | `km.ToggleInput` |
+| `Ctrl+/` | Toggle preview pane on/off | `km.TogglePreview` |
 
