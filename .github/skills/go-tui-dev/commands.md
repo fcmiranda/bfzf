@@ -1,0 +1,1 @@
+./bfzf --preview 'bat {} --color="always"' -border="rounded"

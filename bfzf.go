@@ -800,8 +800,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.scrollDragStartOff = m.previewVP.YOffset()
 				}
 				// ── Divider click: begin pane resize (PreviewRight only) ──────────
+				// Allow ±1 column so the divider is easy to grab.
 				if m.previewPos == PreviewRight &&
-					mx.X == m.dividerScreenX &&
+					m.dividerScreenX >= 0 &&
+					mx.X >= m.dividerScreenX-1 && mx.X <= m.dividerScreenX+1 &&
 					mx.Y >= m.splitPanelY && mx.Y <= m.previewVPEndY {
 					m.paneResizing = true
 					m.paneResizeDragX0 = mx.X
@@ -811,51 +813,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMotionMsg:
+		// Do NOT gate dragging on mx.Button: many terminals report Button=0 in
+		// motion events even while left-button is held.  Rely on drag-state flags
+		// set in MouseClickMsg instead.
 		mx := msg.Mouse()
-		if mx.Button == tea.MouseLeft {
-			// ── Scroll drag ───────────────────────────────────────────────────────
-			if m.scrollDragging && m.previewFunc != nil && !m.hidePreview {
-				total := m.previewVP.TotalLineCount()
-				vpH := m.previewVP.Height()
-				if total > vpH && vpH > 0 {
-					frac := float64(mx.Y-m.previewVPStartY) / float64(vpH)
-					if frac < 0 {
-						frac = 0
-					} else if frac > 1 {
-						frac = 1
-					}
-					m.previewVP.SetYOffset(int(frac * float64(total-vpH)))
+		// ── Scroll drag ───────────────────────────────────────────────────────
+		if m.scrollDragging && m.previewFunc != nil && !m.hidePreview {
+			total := m.previewVP.TotalLineCount()
+			vpH := m.previewVP.Height()
+			if total > vpH && vpH > 0 {
+				frac := float64(mx.Y-m.previewVPStartY) / float64(vpH)
+				if frac < 0 {
+					frac = 0
+				} else if frac > 1 {
+					frac = 1
 				}
+				m.previewVP.SetYOffset(int(frac * float64(total-vpH)))
 			}
-			// ── Pane resize drag (PreviewRight) ───────────────────────────────────
-			if m.paneResizing && m.previewPos == PreviewRight {
-				effW := m.width
-				xOff := 0
-				if m.showOuterBorder {
-					effW = max(1, effW-m.outerBorderStyle.GetHorizontalFrameSize())
-					xOff = m.outerBorderStyle.GetHorizontalFrameSize() / 2
-				}
-				sepW := 1
-				if m.showPreviewBorder {
-					sepW = 0
-				}
-				// New preview width = space to the right of the mouse X.
-				newPrevW := effW - (mx.X - xOff) - sepW
-				if newPrevW < 8 {
-					newPrevW = 8
-				} else if newPrevW > effW-8 {
-					newPrevW = effW - 8
-				}
-				newPct := newPrevW * 100 / effW
-				if newPct < 10 {
-					newPct = 10
-				} else if newPct > 90 {
-					newPct = 90
-				}
-				m.previewSize = newPct
-				m.previewWidth = 0 // clear any fixed-width override
-				m.resize()
+		}
+		// ── Pane resize drag (PreviewRight) ───────────────────────────────────
+		if m.paneResizing && m.previewPos == PreviewRight {
+			effW := m.width
+			xOff := 0
+			if m.showOuterBorder {
+				effW = max(1, effW-m.outerBorderStyle.GetHorizontalFrameSize())
+				xOff = m.outerBorderStyle.GetHorizontalFrameSize() / 2
 			}
+			sepW := 1
+			if m.showPreviewBorder {
+				sepW = 0
+			}
+			// New preview area width = columns to the right of the mouse cursor.
+			newPrevW := effW - (mx.X - xOff) - sepW
+			if newPrevW < 8 {
+				newPrevW = 8
+			} else if newPrevW > effW-8 {
+				newPrevW = effW - 8
+			}
+			newPct := newPrevW * 100 / effW
+			if newPct < 10 {
+				newPct = 10
+			} else if newPct > 90 {
+				newPct = 90
+			}
+			m.previewSize = newPct
+			m.previewWidth = 0 // clear any fixed-width override
+			m.resize()
 		}
 
 	case tea.MouseReleaseMsg:
@@ -1348,7 +1351,13 @@ func (m *Model) render() string {
 			if m.showPreviewBorder {
 				splitPanel = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
 			} else {
-				barHeight := m.vp.Height()
+				// Bar height must match the full rendered list pane height,
+				// including any list border vertical frame.
+				listBorderV := 0
+				if m.showListBorder {
+					listBorderV = m.styles.ListBorder.GetVerticalFrameSize()
+				}
+				barHeight := m.vp.Height() + listBorderV
 				bar := m.styles.PreviewBorder.Render(
 					strings.Repeat("│\n", barHeight-1) + "│",
 				)
@@ -1373,12 +1382,12 @@ func (m *Model) render() string {
 
 // renderListPane builds the list side: optional titled border + viewport.
 // When a border is enabled, the listTitle is embedded in the top border line
-// (fzf-style). Without a border it appears as a separate row above the viewport.
+// and the match count (matched/total) is embedded in the right slot, mirroring
+// how the preview border shows the line count.
 func (m *Model) renderListPane() string {
 	vpView := m.vp.View()
 	if m.showListBorder {
-		// Title goes in the top border line (fzf-style).
-		return titledBorder(vpView, m.listTitle, "", m.styles.ListBorder)
+		return titledBorder(vpView, m.listTitle, m.renderMatchInfoBorder(), m.styles.ListBorder)
 	}
 	content := vpView
 	if m.listTitle != "" {
@@ -1709,27 +1718,44 @@ func (m *Model) renderList() string {
 	return sb.String()
 }
 
-// renderMatchInfo returns a styled match-count string such as "42/1000"
-// according to the current [InfoStyle]. Returns an empty string when the style
-// is [InfoHidden] or there are no items.
+// renderMatchInfo returns a styled match-count string such as "  42/1000" for
+// display as a standalone line between the input and the list.
+// Returns an empty string when InfoHidden, when there are no items, OR when
+// the count is already embedded in the list border (showListBorder=true).
 func (m *Model) renderMatchInfo() string {
 	if m.infoStyle == InfoHidden {
 		return ""
 	}
-	total := len(m.items) - m.headerLines
-	if total <= 0 {
+	// When a list border is active the count is shown in its right border slot;
+	// suppress the standalone line to avoid duplication.
+	if m.showListBorder {
 		return ""
 	}
-	// Subtract header lines that are headers (non-selectable) from total.
-	// Use the simpler: total selectable items vs matched selectable items.
-	totalSel := 0
+	return m.styles.Help.Render(fmt.Sprintf("  %d/%d", len(m.selectableIdxs), m.countSelectableItems()))
+}
+
+// renderMatchInfoBorder returns the match count formatted for embedding in the
+// list border's right slot (same visual style as the preview line-count badge).
+func (m *Model) renderMatchInfoBorder() string {
+	if m.infoStyle == InfoHidden {
+		return ""
+	}
+	total := m.countSelectableItems()
+	if total == 0 {
+		return ""
+	}
+	return m.styles.PreviewLineCount.Render(fmt.Sprintf("%d/%d", len(m.selectableIdxs), total))
+}
+
+// countSelectableItems returns the total number of non-header, non-pinned items.
+func (m *Model) countSelectableItems() int {
+	n := 0
 	for i := m.headerLines; i < len(m.items); i++ {
 		if !m.items[i].IsHeader() {
-			totalSel++
+			n++
 		}
 	}
-	matched := len(m.selectableIdxs)
-	return m.styles.Help.Render(fmt.Sprintf("  %d/%d", matched, totalSel))
+	return n
 }
 
 // renderHelp returns a compact help line.

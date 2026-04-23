@@ -102,12 +102,30 @@ func WithDefaultSpinner(s spinner.Spinner) Option {
 // WithPreview attaches a preview function to the model. On each cursor
 // movement the function is called in a goroutine and its output is displayed
 // in a split preview pane. Pass nil to disable preview.
+// A border is automatically enabled on the preview pane so that a visible
+// right edge and title bar are shown. Call [WithNoPreviewBorder] to opt out.
 func WithPreview(fn PreviewFunc) Option {
 	return func(m *Model) {
 		m.previewFunc = fn
-		if fn != nil && m.previewVP.Width() == 0 {
-			m.previewVP = initPreview()
+		if fn != nil {
+			if m.previewVP.Width() == 0 {
+				m.previewVP = initPreview()
+			}
+			// Auto-enable preview border for a visible right edge that aligns
+			// with the input filter's right edge.
+			WithPreviewBorder()(m)
 		}
+	}
+}
+
+// WithNoPreviewBorder disables the preview pane border, reverting to the plain
+// separator bar layout. This opts out of the default set by [WithPreview].
+func WithNoPreviewBorder() Option {
+	return func(m *Model) {
+		m.showPreviewBorder = false
+		// Restore plain-separator border style (foreground-only, no box).
+		m.styles.PreviewBorder = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
 	}
 }
 
