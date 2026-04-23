@@ -85,7 +85,7 @@ EOF
 | `-limit n` | 1 | Max selections (overridden by `-multi`) |
 | `-prompt str` | `❯ ` | Search prompt |
 | `-placeholder str` | `Filter…` | Search box placeholder |
-| `-height n` | 0 (full screen) | Terminal lines to use |
+| `-height val` | full screen | Component height: absolute lines (`20`) or percentage (`40%`); adapts on resize when given as `%` |
 | `-group-prefix str` | — | Lines with this prefix become non-selectable headers (prefix stripped) |
 | `-spinner-prefix str` | — | Lines with this prefix get an animated spinner (prefix stripped) |
 | `-preview cmd` | — | Shell command for preview; supports `{}`, `{-1}`, `{n}` |
@@ -100,6 +100,9 @@ EOF
 | `-list-border` | false | Draw a rounded border around the list pane; `-header` is embedded in the top border line |
 | `-no-input` | false | Hide search input (navigation only; `ctrl+f` toggles at runtime) |
 | `-input-border` | false | Draw a rounded border around the search input |
+| `-cursor str` | `❯ ` | Cursor-row prefix glyph |
+| `-marker style` | `circles` | Multi-select marker style: `circles` `squares` `filled` `arrows` `checkmarks` `stars` `diamonds` |
+| `-popup spec` | — | Start in tmux/Zellij popup; spec: `[center\|top\|bottom\|left\|right][,W%][,H%]` (e.g. `center`, `left,40%,90%`) |
 | `-style` | `default` | Style preset: `default`, `full` (all borders), or `minimal` (no borders, no help) |
 | `-preview-width n` | 0 (use %) | Preview pane width in columns (overrides `-preview-size` when > 0; right layout) |
 | `-preview-height n` | 0 (use %) | Preview pane height in lines (overrides `-preview-size` when > 0; bottom layout) |

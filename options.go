@@ -33,12 +33,30 @@ func WithPlaceholder(p string) Option {
 }
 
 // WithHeight sets the overall height of the component in terminal lines.
-// The viewport adjusts to fit within this height.
+// The viewport adjusts to fit within this height. Resizing the terminal does
+// not change the height once set (use [WithHeightPercent] for adaptive sizing).
 func WithHeight(h int) Option {
 	return func(m *Model) {
 		m.height = h
+		m.heightFixed = true
 		m.resize()
 		m.ready = true
+	}
+}
+
+// WithHeightPercent sets the component height as a percentage (1–100) of the
+// terminal height. The height adapts when the terminal is resized, unlike
+// [WithHeight] which fixes the height. Overrides a previous [WithHeight] call.
+func WithHeightPercent(pct int) Option {
+	return func(m *Model) {
+		if pct < 1 {
+			pct = 1
+		}
+		if pct > 100 {
+			pct = 100
+		}
+		m.heightPercent = pct
+		m.heightFixed = false
 	}
 }
 
@@ -258,5 +276,40 @@ func WithPreviewHeight(lines int) Option {
 func WithColor(spec string) Option {
 	return func(m *Model) {
 		_ = ApplyColorSpec(spec, &m.styles)
+	}
+}
+
+// WithCursorPrefix overrides the cursor-line prefix glyph (default "❯ ").
+// The string is rendered using the [Styles.CursorIndicator] style.
+func WithCursorPrefix(s string) Option {
+	return func(m *Model) {
+		m.keymap.CursorPrefix = s
+	}
+}
+
+// MarkerStyle holds the glyphs printed before selected and unselected items in
+// multi-select mode. Both strings should have equal display widths to keep the
+// list columns aligned.
+type MarkerStyle struct {
+	Selected   string
+	Unselected string
+}
+
+// Predefined [MarkerStyle] sets.
+var (
+	MarkerCircles    = MarkerStyle{Selected: "◉ ", Unselected: "○ "}  // default
+	MarkerSquares    = MarkerStyle{Selected: "▪ ", Unselected: "▫ "}
+	MarkerFilled     = MarkerStyle{Selected: "◼ ", Unselected: "◻ "}
+	MarkerArrows     = MarkerStyle{Selected: "▶ ", Unselected: "  "}
+	MarkerCheckmarks = MarkerStyle{Selected: "✓ ", Unselected: "  "}
+	MarkerStars      = MarkerStyle{Selected: "★ ", Unselected: "☆ "}
+	MarkerDiamonds   = MarkerStyle{Selected: "◆ ", Unselected: "◇ "}
+)
+
+// WithMarkerStyle overrides the selected/unselected item glyphs for multi-select.
+func WithMarkerStyle(ms MarkerStyle) Option {
+	return func(m *Model) {
+		m.keymap.SelectedPrefix = ms.Selected
+		m.keymap.UnselectedPrefix = ms.Unselected
 	}
 }

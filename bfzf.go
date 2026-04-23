@@ -199,6 +199,15 @@ type Model struct {
 	// previewHeight is an absolute row count for the preview pane.
 	// When > 0 it overrides previewSize percentage.
 	previewHeight int
+
+	// ── Height mode ──────────────────────────────────────────────────────────
+
+	// heightFixed marks that m.height was set programmatically and must not be
+	// overridden by tea.WindowSizeMsg (inline/fixed-height mode).
+	heightFixed bool
+	// heightPercent, when > 0, sets height as a percentage of the terminal
+	// height on each WindowSizeMsg. Ignored when heightFixed is true.
+	heightPercent int
 }
 
 // New creates a new Model with the provided items and options.
@@ -287,7 +296,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.height = msg.Height
+		if !m.heightFixed {
+			if m.heightPercent > 0 {
+				m.height = msg.Height * m.heightPercent / 100
+			} else {
+				m.height = msg.Height
+			}
+		}
 		m.resize()
 		m.ready = true
 
@@ -894,9 +909,9 @@ func (m *Model) renderList() string {
 			// Selection prefix (multi-select only).
 			if m.Limit != 1 {
 				if isSelected {
-					line.WriteString(m.styles.SelectedPrefix.Render("◉ "))
+					line.WriteString(m.styles.SelectedPrefix.Render(m.keymap.SelectedPrefix))
 				} else {
-					line.WriteString(m.styles.UnselectedPrefix.Render("○ "))
+					line.WriteString(m.styles.UnselectedPrefix.Render(m.keymap.UnselectedPrefix))
 				}
 			} else {
 				line.WriteString(" ")

@@ -77,7 +77,7 @@ type config struct {
 	limit           int
 	prompt          string
 	placeholder     string
-	height          int
+	height          string
 	groupPrefix     string
 	spinnerPrefix   string
 	previewCmd      string
@@ -96,6 +96,9 @@ type config struct {
 	previewWidth    int
 	previewHeight   int
 	colorSpec       string
+	cursor          string
+	marker          string
+	popup           string
 }
 
 func parseFlags() config {
@@ -106,9 +109,12 @@ func parseFlags() config {
 	flag.IntVar(&cfg.limit, "limit", 1, "max selections (overridden by -multi)")
 	flag.StringVar(&cfg.prompt, "prompt", "❯ ", "search prompt")
 	flag.StringVar(&cfg.placeholder, "placeholder", "Filter…", "placeholder text")
-	flag.IntVar(&cfg.height, "height", 0, "terminal lines to use (0 = full screen)")
+	flag.StringVar(&cfg.height, "height", "", `component height: absolute lines (e.g. "20") or percentage (e.g. "40%"); empty = full screen`)
 	flag.StringVar(&cfg.groupPrefix, "group-prefix", "", "lines with this prefix become group headers (prefix stripped)")
 	flag.StringVar(&cfg.spinnerPrefix, "spinner-prefix", "", "lines with this prefix get an animated spinner (prefix stripped)")
+	flag.StringVar(&cfg.cursor, "cursor", "", `cursor prefix glyph (default "❯ ")`)
+	flag.StringVar(&cfg.marker, "marker", "", "multi-select marker style: circles (default), squares, filled, arrows, checkmarks, stars, diamonds")
+	flag.StringVar(&cfg.popup, "popup", "", `start in tmux/Zellij popup; value is geometry: [center|top|bottom|left|right][,W%][,H%] (e.g. "center", "left,40%,90%")`)
 	flag.StringVar(&cfg.previewCmd, "preview", "", "shell command for preview; use {} for full label, {-1} for last field, {n} for nth field")
 	flag.StringVar(&cfg.previewPosition, "preview-position", "right", "preview panel position: right (default) or bottom")
 	flag.IntVar(&cfg.previewSize, "preview-size", 40, "preview pane size in percent (10–90)")
@@ -439,8 +445,14 @@ func main() {
 		bfzf.WithPrompt(cfg.prompt),
 		bfzf.WithPlaceholder(cfg.placeholder),
 	}
-	if cfg.height > 0 {
-		opts = append(opts, bfzf.WithHeight(cfg.height))
+	if cfg.height != "" {
+		if h, pct, ok := parseHeightArg(cfg.height); ok {
+			if pct > 0 {
+				opts = append(opts, bfzf.WithHeightPercent(pct))
+			} else {
+				opts = append(opts, bfzf.WithHeight(h))
+			}
+		}
 	}
 	if cfg.noSort {
 		opts = append(opts, bfzf.WithNoSort())
@@ -471,6 +483,24 @@ func main() {
 	}
 	if cfg.colorSpec != "" {
 		opts = append(opts, bfzf.WithColor(cfg.colorSpec))
+	}
+	if cfg.cursor != "" {
+		opts = append(opts, bfzf.WithCursorPrefix(cfg.cursor))
+	}
+	if cfg.marker != "" {
+		if ms, ok := namedMarkerStyle(cfg.marker); ok {
+			opts = append(opts, bfzf.WithMarkerStyle(ms))
+		} else {
+			fmt.Fprintf(os.Stderr, "bfzf: unknown marker style %q (circles|squares|filled|arrows|checkmarks|stars|diamonds)\n", cfg.marker)
+		}
+	}
+	// Popup mode: after items are ready, re-launch inside tmux/Zellij popup.
+	if cfg.popup != "" && os.Getenv("BFZF_IN_POPUP") == "" {
+		if err := runPopup(cfg.popup, items, cfg.groupPrefix, cfg.spinnerPrefix, stdinUsed); err != nil {
+			fmt.Fprintln(os.Stderr, "bfzf:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 	if cfg.previewCmd != "" {
 		opts = append(opts,
@@ -528,5 +558,243 @@ func main() {
 		fmt.Fprintln(w, item.Label())
 	}
 	_ = w.Flush()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Height flag helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+// parseHeightArg parses a height string such as "20" or "40%" into either an
+// absolute line count or a percentage.  Returns (abs, 0, true) for absolute,
+// (0, pct, true) for percentage, or (0, 0, false) on parse error.
+func parseHeightArg(s string) (abs int, pct int, ok bool) {
+	if strings.HasSuffix(s, "%") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "%"))
+		if err != nil || n < 1 || n > 100 {
+			return 0, 0, false
+		}
+		return 0, n, true
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0, 0, false
+	}
+	return n, 0, true
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Marker style helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+// namedMarkerStyle resolves a style name to a [bfzf.MarkerStyle].
+func namedMarkerStyle(name string) (bfzf.MarkerStyle, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "circles", "circle":
+		return bfzf.MarkerCircles, true
+	case "squares", "square":
+		return bfzf.MarkerSquares, true
+	case "filled":
+		return bfzf.MarkerFilled, true
+	case "arrows", "arrow":
+		return bfzf.MarkerArrows, true
+	case "checkmarks", "checkmark", "check":
+		return bfzf.MarkerCheckmarks, true
+	case "stars", "star":
+		return bfzf.MarkerStars, true
+	case "diamonds", "diamond":
+		return bfzf.MarkerDiamonds, true
+	}
+	return bfzf.MarkerStyle{}, false
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Popup helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+type popupSpec struct {
+	position string // center | top | bottom | left | right
+	width    string // e.g. "80%" or "40"
+	height   string
+}
+
+// parsePopupSpec parses the --popup flag value.
+//
+//	"center"           → center, 50% × 50%
+//	"80%"              → center, 80% × 80%
+//	"100%,50%"         → center, 100% × 50%
+//	"left,40%"         → left, 40% wide
+//	"left,40%,90%"     → left, 40% wide × 90% tall
+//	"top,40%"          → top, full width × 40% tall
+//	"bottom,80%,40%"   → bottom, 80% wide × 40% tall
+func parsePopupSpec(s string) popupSpec {
+	spec := popupSpec{position: "center", width: "50%", height: "50%"}
+	if s == "" {
+		return spec
+	}
+
+	parts := strings.Split(s, ",")
+	i := 0
+	switch parts[0] {
+	case "center", "top", "bottom", "left", "right":
+		spec.position = parts[0]
+		i = 1
+	}
+
+	// Collect non-empty, non-"border-native" parts as sizes.
+	var sizes []string
+	for ; i < len(parts); i++ {
+		p := strings.TrimSpace(parts[i])
+		if p != "" && p != "border-native" {
+			sizes = append(sizes, p)
+		}
+	}
+
+	switch spec.position {
+	case "left", "right":
+		if len(sizes) > 0 {
+			spec.width = sizes[0]
+		}
+		if len(sizes) > 1 {
+			spec.height = sizes[1]
+		}
+	case "top", "bottom":
+		if len(sizes) == 1 {
+			spec.height = sizes[0]
+			spec.width = "100%"
+		} else if len(sizes) >= 2 {
+			spec.width = sizes[0]
+			spec.height = sizes[1]
+		}
+	default: // center
+		if len(sizes) == 1 {
+			spec.width = sizes[0]
+			spec.height = sizes[0]
+		} else if len(sizes) >= 2 {
+			spec.width = sizes[0]
+			spec.height = sizes[1]
+		}
+	}
+	return spec
+}
+
+// runPopup serialises items to a temp file (when stdin was the source), builds
+// an inner bfzf command, and runs it inside a tmux or Zellij popup.  The
+// selected output written by the subprocess is forwarded to our stdout.
+func runPopup(popupArg string, items []bfzf.Item, groupPrefix, spinnerPrefix string, stdinUsed bool) error {
+	spec := parsePopupSpec(popupArg)
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot find bfzf executable: %w", err)
+	}
+
+	// Temp file that receives the selected output of the inner bfzf process.
+	outFile, err := os.CreateTemp("", "bfzf-out-*")
+	if err != nil {
+		return fmt.Errorf("cannot create temp output file: %w", err)
+	}
+	outPath := outFile.Name()
+	outFile.Close()
+	defer os.Remove(outPath) // #nosec G304
+
+	// When items came from stdin, serialize them so the subprocess can re-read.
+	var inputPath string
+	if stdinUsed {
+		inFile, err := os.CreateTemp("", "bfzf-in-*")
+		if err != nil {
+			return fmt.Errorf("cannot create temp input file: %w", err)
+		}
+		inputPath = inFile.Name()
+		bw := bufio.NewWriter(inFile)
+		for _, item := range items {
+			label := item.Label()
+			switch {
+			case item.IsHeader() && groupPrefix != "":
+				fmt.Fprintln(bw, groupPrefix+label)
+			case spinnerPrefix != "":
+				if _, ok := item.(bfzf.SpinnerItem); ok {
+					fmt.Fprintln(bw, spinnerPrefix+label)
+					continue
+				}
+				fallthrough
+			default:
+				fmt.Fprintln(bw, label)
+			}
+		}
+		if err := bw.Flush(); err != nil {
+			inFile.Close()
+			os.Remove(inputPath)
+			return fmt.Errorf("cannot write temp input file: %w", err)
+		}
+		inFile.Close()
+		defer os.Remove(inputPath)
+	}
+
+	// Build inner shell command: BFZF_IN_POPUP=1 bfzf [original-args] [<input] >output
+	var parts []string
+	parts = append(parts, "BFZF_IN_POPUP=1", shellQuote(exe))
+	for _, arg := range os.Args[1:] {
+		parts = append(parts, shellQuote(arg))
+	}
+	if inputPath != "" {
+		parts = append(parts, "<", shellQuote(inputPath))
+	}
+	parts = append(parts, ">", shellQuote(outPath))
+	innerCmd := strings.Join(parts, " ")
+
+	// Launch via the detected multiplexer.
+	switch {
+	case os.Getenv("TMUX") != "":
+		err = runTmuxPopup(spec, innerCmd)
+	case os.Getenv("ZELLIJ") != "" || os.Getenv("ZELLIJ_SESSION_NAME") != "":
+		err = runZellijPopup(spec, innerCmd)
+	default:
+		return fmt.Errorf("--popup requires tmux 3.3+ ($TMUX) or Zellij 0.44+ ($ZELLIJ)")
+	}
+	if err != nil {
+		// User cancelled or popup failed — treat as no selection.
+		return nil
+	}
+
+	// Forward selected output to our stdout.
+	data, err := os.ReadFile(outPath) // #nosec G304
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	_, err = os.Stdout.Write(data)
+	return err
+}
+
+// runTmuxPopup launches innerCmd inside a tmux display-popup window.
+func runTmuxPopup(spec popupSpec, innerCmd string) error {
+	args := []string{"display-popup", "-E", "-w", spec.width, "-h", spec.height}
+	switch spec.position {
+	case "top":
+		args = append(args, "-y", "0")
+	case "bottom":
+		args = append(args, "-y", "S")
+	case "left":
+		args = append(args, "-x", "0")
+	case "right":
+		args = append(args, "-x", "R")
+	// center: tmux default (no -x/-y needed)
+	}
+	args = append(args, "--", "sh", "-c", innerCmd)
+	cmd := exec.Command("tmux", args...) // #nosec G204
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stderr // popup renders on terminal, not our stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runZellijPopup launches innerCmd inside a Zellij floating pane.
+func runZellijPopup(spec popupSpec, innerCmd string) error {
+	_ = spec // Zellij run does not support explicit float sizing yet
+	args := []string{"run", "--floating", "--close-on-exit", "--", "sh", "-c", innerCmd}
+	cmd := exec.Command("zellij", args...) // #nosec G204
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 

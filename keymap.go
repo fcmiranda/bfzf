@@ -31,8 +31,15 @@ type KeyMap struct {
 	// When hidden, the current filter is cleared.
 	ToggleInput key.Binding
 
-	// CursorPrefix is the string rendered at the cursor line.
+	// CursorPrefix is the glyph rendered on the cursor row (default "❯ ").
 	CursorPrefix string
+
+	// SelectedPrefix is drawn before a selected item in multi-select mode.
+	// SelectedPrefix and UnselectedPrefix should have equal display widths.
+	SelectedPrefix string
+
+	// UnselectedPrefix is drawn before an unselected item in multi-select mode.
+	UnselectedPrefix string
 }
 
 // ShortHelp implements help.KeyMap (optional).
@@ -125,7 +132,9 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+f"),
 			key.WithHelp("ctrl+f", "toggle search input"),
 		),
-		CursorPrefix: "❯ ",
+		CursorPrefix:     "❯ ",
+		SelectedPrefix:   "◉ ",
+		UnselectedPrefix: "○ ",
 	}
 }
 
