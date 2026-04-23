@@ -1366,7 +1366,11 @@ func (m *Model) render() string {
 			out = join(inputView, infoLine, pinnedHeader, splitPanel, helpStr)
 
 		case PreviewBottom:
-			sep := m.styles.PreviewBorder.Render(strings.Repeat("─", m.width))
+			effW := m.width
+			if m.showOuterBorder {
+				effW = max(1, effW-m.outerBorderStyle.GetHorizontalFrameSize())
+			}
+			sep := m.styles.PreviewBorder.Render(strings.Repeat("─", effW))
 			out = join(inputView, infoLine, pinnedHeader, listPane, sep, previewPane, helpStr)
 
 		default:
@@ -1867,6 +1871,9 @@ func (m *Model) resize() {
 	if m.showOuterBorder {
 		effW = max(1, effW-m.outerBorderStyle.GetHorizontalFrameSize())
 		effH = max(1, effH-m.outerBorderStyle.GetVerticalFrameSize())
+		// Pin the outer border's inner width so its right │ always lands at
+		// column m.width-1 regardless of what content lines contain.
+		m.outerBorderStyle = m.outerBorderStyle.Width(effW)
 	}
 
 	// Fixed rows consumed by the input, title, info, and help line.
@@ -1901,18 +1908,20 @@ func (m *Model) resize() {
 	}
 
 	// Input width: use inputWidth override when set, otherwise full width.
+	// textinput.View() returns promptWidth + SetWidth, so subtract the prompt
+	// visual width here so the total rendered line is exactly iw.
 	if !m.hideInput {
 		iw := effW
 		if m.inputWidth > 0 && m.inputWidth < effW {
 			iw = m.inputWidth
 		}
+		promptW := lipgloss.Width(m.Prompt)
 		if m.showInputBorder {
-			m.styles.InputBorder = m.styles.InputBorder.Width(
-				iw - m.styles.InputBorder.GetHorizontalFrameSize(),
-			)
-			m.input.SetWidth(iw - m.styles.InputBorder.GetHorizontalFrameSize())
+			innerW := iw - m.styles.InputBorder.GetHorizontalFrameSize()
+			m.styles.InputBorder = m.styles.InputBorder.Width(innerW)
+			m.input.SetWidth(max(1, innerW-promptW))
 		} else {
-			m.input.SetWidth(iw)
+			m.input.SetWidth(max(1, iw-promptW))
 		}
 	}
 
