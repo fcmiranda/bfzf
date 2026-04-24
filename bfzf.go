@@ -220,15 +220,15 @@ const (
 )
 
 const (
-	searchFuzzy         searchKind = iota // normal fuzzy (default)
-	searchExact                           // 'text  → substring match
-	searchPrefix                          // ^text  → prefix match
-	searchSuffix                          // text$  → suffix match
-	searchNegate                          // !text  → exclude fuzzy matches
-	searchNegateExact                     // !'text → must NOT contain
-	searchNegatePrefix                    // !^text → must NOT have prefix
-	searchNegateSuffix                    // !text$ → must NOT have suffix
-	searchRegex                           // /pat   → regexp match
+	searchFuzzy        searchKind = iota // normal fuzzy (default)
+	searchExact                          // 'text  → substring match
+	searchPrefix                         // ^text  → prefix match
+	searchSuffix                         // text$  → suffix match
+	searchNegate                         // !text  → exclude fuzzy matches
+	searchNegateExact                    // !'text → must NOT contain
+	searchNegatePrefix                   // !^text → must NOT have prefix
+	searchNegateSuffix                   // !text$ → must NOT have suffix
+	searchRegex                          // /pat   → regexp match
 )
 
 type searchToken struct {
@@ -333,7 +333,7 @@ type Model struct {
 
 	// ── Source data ──────────────────────────────────────────────────────────
 
-	items   []Item
+	items []Item
 	// spinners stores live spinner state keyed by item index.
 	// Populated at construction time from items implementing SpinnerItem.
 	spinners map[int]spinner.Model
@@ -524,8 +524,8 @@ type Model struct {
 	dividerScreenX int
 
 	// — scrollbar drag state —
-	scrollDragging    bool
-	scrollDragStartY  int
+	scrollDragging     bool
+	scrollDragStartY   int
 	scrollDragStartOff int
 
 	// — pane resize drag state —
@@ -784,21 +784,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			mx := msg.Mouse()
 			if mx.Button == tea.MouseLeft {
 				// ── Scrollbar click: jump to position and begin drag ──────────────
-				if mx.X == m.scrollbarScreenX &&
-					mx.Y >= m.previewVPStartY && mx.Y <= m.previewVPEndY {
-					total := m.previewVP.TotalLineCount()
-					vpH := m.previewVP.Height()
-					if total > vpH && vpH > 0 {
-						frac := float64(mx.Y-m.previewVPStartY) / float64(vpH)
-						if frac > 1 {
-							frac = 1
-						}
-						m.previewVP.SetYOffset(int(frac * float64(total-vpH)))
-					}
-					m.scrollDragging = true
-					m.scrollDragStartY = mx.Y
-					m.scrollDragStartOff = m.previewVP.YOffset()
-				}
+				m.beginPreviewScrollbarDrag(mx)
 				// ── Divider click: begin pane resize (PreviewRight only) ──────────
 				// Allow ±1 column so the divider is easy to grab.
 				if m.previewPos == PreviewRight &&
@@ -817,6 +803,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// motion events even while left-button is held.  Rely on drag-state flags
 		// set in MouseClickMsg instead.
 		mx := msg.Mouse()
+		// Some terminals emit motion events before/collapsed instead of click
+		// presses. Allow first motion over the scrollbar to initiate drag.
+		if !m.scrollDragging && m.previewFunc != nil && !m.hidePreview {
+			m.beginPreviewScrollbarDrag(mx)
+		}
 		// ── Scroll drag ───────────────────────────────────────────────────────
 		if m.scrollDragging && m.previewFunc != nil && !m.hidePreview {
 			total := m.previewVP.TotalLineCount()
@@ -894,6 +885,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) beginPreviewScrollbarDrag(mx tea.Mouse) {
+	if mx.X != m.scrollbarScreenX || mx.Y < m.previewVPStartY || mx.Y > m.previewVPEndY {
+		return
+	}
+	total := m.previewVP.TotalLineCount()
+	vpH := m.previewVP.Height()
+	if total > vpH && vpH > 0 {
+		frac := float64(mx.Y-m.previewVPStartY) / float64(vpH)
+		if frac > 1 {
+			frac = 1
+		}
+		m.previewVP.SetYOffset(int(frac * float64(total-vpH)))
+	}
+	m.scrollDragging = true
+	m.scrollDragStartY = mx.Y
+	m.scrollDragStartOff = m.previewVP.YOffset()
 }
 
 // View implements [tea.Model].
