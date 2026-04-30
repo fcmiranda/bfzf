@@ -73,32 +73,33 @@ func newCLISpinnerItem(text string) cliSpinnerItem {
 // ────────────────────────────────────────────────────────────────────────────
 
 type config struct {
-	multi           bool
-	limit           int
-	prompt          string
-	placeholder     string
-	height          string
-	groupPrefix     string
-	spinnerPrefix   string
-	previewCmd      string
-	previewPosition string
-	previewSize     int
-	previewBorder   bool
-	noSort          bool
-	delimiter       string
-	nul             bool
-	jsonInput       bool
-	listTitle       string
-	listBorder      bool
-	noInput         bool
-	inputBorder     bool
-	preset          string
-	previewWidth    int
-	previewHeight   int
-	colorSpec       string
-	cursor          string
-	marker          string
-	popup           string
+	multi                bool
+	limit                int
+	prompt               string
+	placeholder          string
+	height               string
+	groupPrefix          string
+	spinnerPrefix        string
+	previewCmd           string
+	previewPosition      string
+	previewSize          int
+	previewResizePercent bool
+	previewBorder        bool
+	noSort               bool
+	delimiter            string
+	nul                  bool
+	jsonInput            bool
+	listTitle            string
+	listBorder           bool
+	noInput              bool
+	inputBorder          bool
+	preset               string
+	previewWidth         int
+	previewHeight        int
+	colorSpec            string
+	cursor               string
+	marker               string
+	popup                string
 	// new fzf-parity flags
 	reverse          bool
 	exact            bool
@@ -111,20 +112,20 @@ type config struct {
 	inputWidth       int
 	bind             []string // raw "key:action" strings
 	// wrap flags
-	wrapWord         bool
-	wrapSign         string
-	previewWrapSign  string
+	wrapWord        bool
+	wrapSign        string
+	previewWrapSign string
 	// ui appearance
-	infoHidden       bool
-	outerBorder      string // "rounded","sharp","bold","block","double","none"
-	noColor          bool
-	noClear          bool   // disable alternate screen (leave output in scrollback)
+	infoHidden  bool
+	outerBorder string // "rounded","sharp","bold","block","double","none"
+	noColor     bool
+	noClear     bool // disable alternate screen (leave output in scrollback)
 }
 
 // multiString is a flag.Value that accumulates repeated --bind values.
 type multiString []string
 
-func (ms *multiString) String() string  { return strings.Join(*ms, ", ") }
+func (ms *multiString) String() string { return strings.Join(*ms, ", ") }
 func (ms *multiString) Set(s string) error {
 	*ms = append(*ms, s)
 	return nil
@@ -147,6 +148,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.previewCmd, "preview", "", "shell command for preview; use {} for full label, {-1} for last field, {n} for nth field")
 	flag.StringVar(&cfg.previewPosition, "preview-position", "right", "preview panel position: right (default) or bottom")
 	flag.IntVar(&cfg.previewSize, "preview-size", 40, "preview pane size in percent (10–90)")
+	flag.BoolVar(&cfg.previewResizePercent, "preview-resize-percent", true, "show temporary preview width percentage while dragging divider")
 	flag.BoolVar(&cfg.previewBorder, "preview-border", false, "draw a box border around the preview pane")
 	flag.BoolVar(&cfg.noSort, "no-sort", false, "preserve input order (disable score-based sorting)")
 	flag.StringVar(&cfg.delimiter, "delimiter", "\n", "field delimiter for plain-text input")
@@ -405,8 +407,8 @@ func makeShellPreview(cmdTemplate string) bfzf.PreviewFunc {
 		c.Env = append(os.Environ(),
 			"TERM=xterm-256color",
 			"COLORTERM=truecolor",
-			"CLICOLOR_FORCE=1",  // BSD/macOS ls, many CLIs
-			"FORCE_COLOR=3",     // npm/Node ecosystem
+			"CLICOLOR_FORCE=1", // BSD/macOS ls, many CLIs
+			"FORCE_COLOR=3",    // npm/Node ecosystem
 		)
 		out, err := c.Output()
 		if err != nil {
@@ -620,6 +622,7 @@ func main() {
 		opts = append(opts,
 			bfzf.WithPreview(makeShellPreview(cfg.previewCmd)),
 			bfzf.WithPreviewSize(cfg.previewSize),
+			bfzf.WithPreviewResizePercent(cfg.previewResizePercent),
 		)
 		if cfg.previewBorder {
 			opts = append(opts, bfzf.WithPreviewBorder())
@@ -981,7 +984,7 @@ func runTmuxPopup(spec popupSpec, innerCmd string) error {
 		args = append(args, "-x", "0")
 	case "right":
 		args = append(args, "-x", "R")
-	// center: tmux default (no -x/-y needed)
+		// center: tmux default (no -x/-y needed)
 	}
 	args = append(args, "--", "sh", "-c", innerCmd)
 	cmd := exec.Command("tmux", args...) // #nosec G204
@@ -1001,4 +1004,3 @@ func runZellijPopup(spec popupSpec, innerCmd string) error {
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
-

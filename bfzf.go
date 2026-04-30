@@ -376,6 +376,9 @@ type Model struct {
 	previewPos PreviewPosition
 	// previewSize is the percentage of available space given to the preview pane.
 	previewSize int
+	// showPreviewResizePercent controls whether a temporary "preview N%" hint is
+	// shown in the help line while dragging the list/preview divider.
+	showPreviewResizePercent bool
 	// lastPreviewIdx is the item index that last triggered a preview;
 	// used to discard stale results and avoid duplicate work.
 	lastPreviewIdx int
@@ -549,25 +552,26 @@ func New(items []Item, opts ...Option) Model {
 	ti.Prompt = "❯ "
 
 	m := Model{
-		Prompt:           "❯ ",
-		Placeholder:      "Filter...",
-		Limit:            1,
-		items:            items,
-		spinners:         make(map[int]spinner.Model),
-		selected:         make(map[int]struct{}),
-		selectableIdxs:   make([]int, 0, len(items)),
-		cursorPos:        0,
-		input:            ti,
-		vp:               viewport.New(viewport.WithWidth(80), viewport.WithHeight(10)),
-		styles:           DefaultStyles(),
-		keymap:           DefaultKeyMap(),
-		previewSize:      40,
-		lastPreviewIdx:   -1,
-		sortResults:      true,
-		heightPercent:    50,   // default: 50% of terminal height (fzf-like inline mode)
-		useAltScreen:     true, // default: use altscreen so quit leaves no scrollback residue
-		scrollbarScreenX: -1,
-		dividerScreenX:   -1,
+		Prompt:                   "❯ ",
+		Placeholder:              "Filter...",
+		Limit:                    1,
+		items:                    items,
+		spinners:                 make(map[int]spinner.Model),
+		selected:                 make(map[int]struct{}),
+		selectableIdxs:           make([]int, 0, len(items)),
+		cursorPos:                0,
+		input:                    ti,
+		vp:                       viewport.New(viewport.WithWidth(80), viewport.WithHeight(10)),
+		styles:                   DefaultStyles(),
+		keymap:                   DefaultKeyMap(),
+		previewSize:              40,
+		showPreviewResizePercent: true,
+		lastPreviewIdx:           -1,
+		sortResults:              true,
+		heightPercent:            50,   // default: 50% of terminal height (fzf-like inline mode)
+		useAltScreen:             true, // default: use altscreen so quit leaves no scrollback residue
+		scrollbarScreenX:         -1,
+		dividerScreenX:           -1,
 	}
 
 	// Extract spinner configs from items implementing SpinnerItem.
@@ -1832,6 +1836,12 @@ func (m *Model) renderHelp() string {
 			hints = append(hints, "shift+↑/↓ preview scroll")
 		}
 		hints = append(hints, "ctrl+/ toggle preview")
+		if m.showPreviewResizePercent &&
+			m.paneResizing &&
+			!m.hidePreview &&
+			m.previewPos == PreviewRight {
+			hints = append(hints, fmt.Sprintf("preview %d%%", m.previewSize))
+		}
 	}
 	hints = append(hints, "esc quit", "ctrl+c abort")
 	return m.styles.Help.Render(strings.Join(hints, "  ·  "))

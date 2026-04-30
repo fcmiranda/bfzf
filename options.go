@@ -151,6 +151,15 @@ func WithPreviewSize(pct int) Option {
 	}
 }
 
+// WithPreviewResizePercent controls whether a temporary "preview N%" hint is
+// shown while dragging the list/preview divider with the mouse.
+// Enabled by default.
+func WithPreviewResizePercent(show bool) Option {
+	return func(m *Model) {
+		m.showPreviewResizePercent = show
+	}
+}
+
 // WithNoSort disables score-based sorting of fuzzy matches, preserving the
 // original input order (equivalent to fzf's --no-sort).
 func WithNoSort() Option {
@@ -317,7 +326,7 @@ type MarkerStyle struct {
 
 // Predefined [MarkerStyle] sets.
 var (
-	MarkerCircles    = MarkerStyle{Selected: "◉ ", Unselected: "○ "}  // default
+	MarkerCircles    = MarkerStyle{Selected: "◉ ", Unselected: "○ "} // default
 	MarkerSquares    = MarkerStyle{Selected: "▪ ", Unselected: "▫ "}
 	MarkerFilled     = MarkerStyle{Selected: "◼ ", Unselected: "◻ "}
 	MarkerArrows     = MarkerStyle{Selected: "▶ ", Unselected: "  "}
