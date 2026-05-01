@@ -138,7 +138,7 @@ func WithPreviewPosition(pos PreviewPosition) Option {
 }
 
 // WithPreviewSize sets the percentage of available space allocated to the
-// preview pane. Valid range is 10–90 (default 40).
+// preview pane. Valid range is 10–90 (default 50).
 func WithPreviewSize(pct int) Option {
 	return func(m *Model) {
 		if pct < 10 {

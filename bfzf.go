@@ -53,9 +53,20 @@ type Item interface {
 	IsHeader() bool
 }
 
+// SpinnerPlaceholder is a sentinel string that can be embedded anywhere in a
+// SpinnerItem's label to control where the animated spinner frame is rendered.
+// When present, the spinner replaces the placeholder in-place instead of being
+// prepended before the label.  This lets callers position the spinner anywhere
+// within a structured line (e.g. at the same column as a status mark).
+//
+// The value is the lone ASCII SOH byte (0x01), which is invisible and safe to
+// embed in display strings. In shell scripts emit it with: printf '\001'
+const SpinnerPlaceholder = "\x01"
+
 // SpinnerItem is an optional extension of [Item].
 // Items implementing SpinnerItem will have an animated spinner rendered
-// to the left of their label.
+// to the left of their label, or at the position of [SpinnerPlaceholder] if
+// that sentinel is embedded in the label.
 type SpinnerItem interface {
 	Item
 	// Spinner returns the initial spinner.Model configuration for this item.
@@ -564,7 +575,7 @@ func New(items []Item, opts ...Option) Model {
 		vp:                       viewport.New(viewport.WithWidth(80), viewport.WithHeight(10)),
 		styles:                   DefaultStyles(),
 		keymap:                   DefaultKeyMap(),
-		previewSize:              40,
+		previewSize:              50,
 		showPreviewResizePercent: true,
 		lastPreviewIdx:           -1,
 		sortResults:              true,
@@ -641,7 +652,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewResultMsg:
 		// Discard stale responses: only apply if the item is still focused.
 		if msg.itemIdx == m.lastPreviewIdx {
-			m.previewVP.SetContent(msg.content)
+			m.previewVP.SetContent(truncatePreviewLines(msg.content, m.previewVP.Width()))
 		}
 
 	case tea.KeyPressMsg:
@@ -1413,6 +1424,22 @@ func (m *Model) renderListPane() string {
 	return content
 }
 
+// truncatePreviewLines truncates each line of content to maxWidth visible
+// columns (ANSI-aware) so long lines never cause terminal wrapping inside the
+// preview pane.  A width of 0 means no truncation.
+func truncatePreviewLines(content string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if ansi.StringWidth(line) > maxWidth {
+			lines[i] = ansi.Truncate(line, maxWidth, "")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // renderPreviewPane builds the preview panel.
 // When a preview border is enabled, the item title and line count are
 // embedded in the top border line (fzf-style) and the scrollbar is placed in
@@ -1441,15 +1468,13 @@ func (m *Model) renderPreviewPane() string {
 	}
 
 	// No border: overlay scrollbar on the last content column and add title row.
+	// Always emit the title row (even if empty) so that total height is constant
+	// regardless of whether the current item has a title or line count. Without
+	// this, navigating between items causes a 1-row height shift that makes the
+	// layout jump.
 	vpView = m.renderPreviewWithScrollbar(vpView)
-	var titleRow string
-	if titleStr != "" || lineCount != "" {
-		titleRow = titleStr + lineCount
-	}
-	if titleRow != "" {
-		return titleRow + "\n" + vpView
-	}
-	return vpView
+	titleRow := titleStr + lineCount
+	return titleRow + "\n" + vpView
 }
 
 // renderPreviewLineCount returns the "n/total" scroll indicator.
@@ -1682,15 +1707,30 @@ func (m *Model) renderList() string {
 			}
 
 			// Spinner (SpinnerItem only).
+			// If the label contains SpinnerPlaceholder, the spinner frame is
+			// substituted inline at that position instead of being prepended.
+			// spinnerInline tracks whether inline substitution will be used so
+			// the prepend path is skipped.
+			spinnerView := ""
+			spinnerInline := false
 			if s, ok := m.spinners[ve.itemIdx]; ok {
-				line.WriteString(s.View())
-				line.WriteByte(' ')
+				spinnerView = s.View()
+				if strings.Contains(item.Label(), SpinnerPlaceholder) {
+					spinnerInline = true
+				} else {
+					line.WriteString(spinnerView)
+					line.WriteByte(' ')
+				}
 			}
 
 			// renderFrag renders one plain-text fragment (a word-wrapped line
 			// segment) with highlights remapped to its rune offset within the
 			// original label. Applies the correct text style + cursor bg.
 			renderFrag := func(text string, runeStart int) string {
+				// Substitute spinner placeholder inline when applicable.
+				if spinnerInline {
+					text = strings.Replace(text, SpinnerPlaceholder, spinnerView, 1)
+				}
 				fragRunes := len([]rune(text))
 				var localIdxs []int
 				for _, idx := range ve.matchedIdxs {

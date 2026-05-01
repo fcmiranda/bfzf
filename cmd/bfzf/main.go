@@ -42,6 +42,58 @@ import (
 	"github.com/fecavmi/bfzf"
 )
 
+// RawLabeler is an optional interface for items that carry a full raw string
+// (e.g. a tab-delimited line) separate from the display label.
+// makeShellPreview uses RawLabel() for field expansion when --with-nth is active
+// so that {1}, {2} etc. refer to the original tab-delimited fields.
+type RawLabeler interface {
+	RawLabel() string
+}
+
+// withNthItem wraps a tab-delimited raw line and exposes only one field as the
+// display label while keeping the full raw string available for preview templates.
+type withNthItem struct {
+	raw     string // original tab-delimited line (ANSI codes preserved)
+	display string // the nth tab field shown in the list
+}
+
+func (w withNthItem) Label() string       { return w.display }
+func (w withNthItem) FilterValue() string { return ansiEscRe.ReplaceAllString(w.display, "") }
+func (w withNthItem) IsHeader() bool      { return false }
+func (w withNthItem) RawLabel() string    { return w.raw }
+
+// newWithNthItem creates a withNthItem selecting field n (1-based) from a
+// tab-delimited line.  Falls back to the full line when n is out of range.
+func newWithNthItem(line string, n int) withNthItem {
+	fields := strings.Split(line, "\t")
+	display := line
+	if n > 0 && n <= len(fields) {
+		display = fields[n-1]
+	}
+	return withNthItem{raw: line, display: display}
+}
+
+// withNthSpinnerItem combines withNthItem with SpinnerItem so that tab-delimited
+// lines can have an animated spinner while still showing only the nth field.
+type withNthSpinnerItem struct {
+	withNthItem
+	s spinner.Model
+}
+
+func (w withNthSpinnerItem) Spinner() spinner.Model { return w.s }
+
+// newWithNthSpinnerItem creates a spinner-animated item that displays field n of
+// the tab-delimited line and stores the full raw line for preview expansion.
+func newWithNthSpinnerItem(line string, n int) withNthSpinnerItem {
+	return withNthSpinnerItem{
+		withNthItem: newWithNthItem(line, n),
+		s: spinner.New(
+			spinner.WithSpinner(spinner.Dot),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("214"))),
+		),
+	}
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // CLI-specific item types
 // ────────────────────────────────────────────────────────────────────────────
@@ -87,6 +139,7 @@ type config struct {
 	previewBorder        bool
 	noSort               bool
 	delimiter            string
+	withNth              int // display only this tab-field (1-based); 0 = full label
 	nul                  bool
 	jsonInput            bool
 	listTitle            string
@@ -147,11 +200,12 @@ func parseFlags() config {
 	flag.StringVar(&cfg.popup, "popup", "", `start in tmux/Zellij popup; value is geometry: [center|top|bottom|left|right][,W%][,H%] (e.g. "center", "left,40%,90%")`)
 	flag.StringVar(&cfg.previewCmd, "preview", "", "shell command for preview; use {} for full label, {-1} for last field, {n} for nth field")
 	flag.StringVar(&cfg.previewPosition, "preview-position", "right", "preview panel position: right (default) or bottom")
-	flag.IntVar(&cfg.previewSize, "preview-size", 40, "preview pane size in percent (10–90)")
+	flag.IntVar(&cfg.previewSize, "preview-size", 50, "preview pane size in percent (10–90)")
 	flag.BoolVar(&cfg.previewResizePercent, "preview-resize-percent", true, "show temporary preview width percentage while dragging divider")
 	flag.BoolVar(&cfg.previewBorder, "preview-border", false, "draw a box border around the preview pane")
 	flag.BoolVar(&cfg.noSort, "no-sort", false, "preserve input order (disable score-based sorting)")
 	flag.StringVar(&cfg.delimiter, "delimiter", "\n", "field delimiter for plain-text input")
+	flag.IntVar(&cfg.withNth, "with-nth", 0, "display only the Nth tab-delimited field (1-based); all fields remain available in preview {n} selectors")
 	flag.BoolVar(&cfg.nul, "0", false, "use NUL (\\x00) as delimiter")
 	flag.BoolVar(&cfg.jsonInput, "json", false, "parse stdin as JSON (array of strings or objects)")
 	flag.StringVar(&cfg.listTitle, "header", "", "title text shown above the list")
@@ -319,16 +373,25 @@ func readJSON(r *os.File) ([]bfzf.Item, error) {
 // Item parsing (plain text — group-prefix / spinner-prefix annotation)
 // ────────────────────────────────────────────────────────────────────────────
 
-func parseItems(lines []string, groupPrefix, spinnerPrefix string) []bfzf.Item {
+func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int) []bfzf.Item {
 	items := make([]bfzf.Item, 0, len(lines))
 	for _, line := range lines {
 		switch {
 		case groupPrefix != "" && strings.HasPrefix(line, groupPrefix):
 			items = append(items, bfzf.NewHeader(strings.TrimPrefix(line, groupPrefix)))
 		case spinnerPrefix != "" && strings.HasPrefix(line, spinnerPrefix):
-			items = append(items, newCLISpinnerItem(strings.TrimPrefix(line, spinnerPrefix)))
+			stripped := strings.TrimPrefix(line, spinnerPrefix)
+			if withNth > 0 {
+				items = append(items, newWithNthSpinnerItem(stripped, withNth))
+			} else {
+				items = append(items, newCLISpinnerItem(stripped))
+			}
 		default:
-			items = append(items, bfzf.NewItem(line))
+			if withNth > 0 {
+				items = append(items, newWithNthItem(line, withNth))
+			} else {
+				items = append(items, bfzf.NewItem(line))
+			}
 		}
 	}
 	return items
@@ -399,7 +462,14 @@ func expandPreviewTemplate(tmpl, label string) string {
 // and ls --color automatically produce coloured output in the preview pane.
 func makeShellPreview(cmdTemplate string) bfzf.PreviewFunc {
 	return func(item bfzf.Item) string {
-		cmd := expandPreviewTemplate(cmdTemplate, item.Label())
+		// When --with-nth is active the item carries a full raw line (all
+		// tab-delimited fields).  Use that for template expansion so {1}, {2}
+		// etc. resolve against the original fields, not just the display label.
+		lbl := item.Label()
+		if rl, ok := item.(RawLabeler); ok {
+			lbl = rl.RawLabel()
+		}
+		cmd := expandPreviewTemplate(cmdTemplate, lbl)
 
 		c := exec.Command("sh", "-c", cmd) // #nosec G204 — intentional user command
 		// Inherit the current environment and layer in color-forcing variables
@@ -437,7 +507,7 @@ func main() {
 
 	if flag.NArg() > 0 {
 		// Positional arguments take priority over stdin.
-		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix)
+		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth)
 	} else {
 		stat, err := os.Stdin.Stat()
 		if err != nil {
@@ -463,7 +533,7 @@ func main() {
 					rawLines = append(rawLines, line)
 				}
 			}
-			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix)
+			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth)
 		} else {
 			stdinUsed = true
 
@@ -483,7 +553,7 @@ func main() {
 					fmt.Fprintln(os.Stderr, "bfzf: error reading stdin:", err)
 					os.Exit(1)
 				}
-				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix)
+				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth)
 			}
 		}
 	}
@@ -762,7 +832,7 @@ func parseBind(spec, groupPrefix, spinnerPrefix string) (string, bfzf.BindFunc, 
 					lines = append(lines, line)
 				}
 			}
-			return parseItems(lines, groupPrefix, spinnerPrefix)
+			return parseItems(lines, groupPrefix, spinnerPrefix, 0)
 		})
 	default:
 		return "", nil, fmt.Errorf("unrecognised bind action %q in %q", action, spec)
@@ -914,13 +984,18 @@ func runPopup(popupArg string, items []bfzf.Item, groupPrefix, spinnerPrefix str
 		inputPath = inFile.Name()
 		bw := bufio.NewWriter(inFile)
 		for _, item := range items {
+			// When --with-nth is active items carry the full raw line; write
+			// that so the inner bfzf instance re-parses with the same fields.
 			label := item.Label()
+			if rl, ok := item.(RawLabeler); ok {
+				label = rl.RawLabel()
+			}
 			switch {
 			case item.IsHeader() && groupPrefix != "":
-				fmt.Fprintln(bw, groupPrefix+label)
+				fmt.Fprintln(bw, groupPrefix+item.Label())
 			case spinnerPrefix != "":
 				if _, ok := item.(bfzf.SpinnerItem); ok {
-					fmt.Fprintln(bw, spinnerPrefix+label)
+					fmt.Fprintln(bw, spinnerPrefix+item.Label())
 					continue
 				}
 				fallthrough

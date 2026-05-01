@@ -47,6 +47,9 @@ make build
 
 # Or install system-wide
 make install          # puts `bfzf` on your PATH via go install
+
+# Linux-friendly global install (into ~/.local/bin)
+make install-linux
 ```
 
 ---
@@ -123,6 +126,22 @@ printf '#Fruits\nApple\nBanana\n#Veg\nCarrot' | ./bfzf --group-prefix '#'
 # Animated spinners (lines starting with prefix get a Bubble spinner)
 printf '@Building…\nReady item' | ./bfzf --spinner-prefix '@'
 
+# Group headers + spinners together (spinner items under each group)
+printf '#Build Queue\n@Compiling parser\n@Running tests\n#Deploy\n@Uploading image\nReady' \
+  | ./bfzf --group-prefix '#' --spinner-prefix '@'
+
+# Grouped + spinning example from JSON input
+cat <<'EOF' | ./bfzf --json
+[
+  {"label":"── Backend", "header": true},
+  {"label":"Building API", "spinner": true},
+  {"label":"Migrating DB", "spinner": true},
+  {"label":"── Frontend", "header": true},
+  {"label":"Bundling assets", "spinner": true},
+  {"label":"Ready"}
+]
+EOF
+
 # Multi-select (Tab to toggle, Enter to confirm)
 ls | ./bfzf -m
 
@@ -158,7 +177,7 @@ EOF
 | `-spinner-prefix str` | — | Lines with this prefix get an animated spinner (prefix stripped) |
 | `-preview cmd` | — | Shell command for preview; supports `{}`, `{-1}`, `{n}` |
 | `-preview-position` | `right` | `right` or `bottom` |
-| `-preview-size n` | 40 | Preview pane size in percent (10–90) |
+| `-preview-size n` | 50 | Preview pane size in percent (10–90) |
 | `-preview-border` | false | Draw a rounded border around the preview pane; title + `n/total` counter are embedded in the top border line |
 | `-no-sort` | false | Preserve input order (disable score sorting) |
 | `-delimiter str` | `\n` | Line delimiter for plain-text input |
@@ -235,6 +254,8 @@ eza -l | ./bfzf --preview 'bat --color=always {-1}'
 ```bash
 make build     # → ./bfzf
 make install   # → go install (system-wide)
+make install-linux  # → ~/.local/bin/bfzf
+make uninstall-linux
 make clean     # remove ./bfzf
 ```
 
@@ -773,4 +794,3 @@ Library: `bfzf.WithNoColor()`
 | `Alt+/` | Toggle character-level wrap in list | `km.ToggleWrap` |
 | `Alt+W` | Toggle word-level wrap in list | `km.ToggleWrapWord` |
 | `Alt+Shift+W` | Toggle word-level wrap in preview | `km.TogglePreviewWrapWord` |
-
