@@ -1,6 +1,8 @@
 package bfzf
 
 import (
+	"time"
+
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
@@ -544,5 +546,21 @@ func WithNoColor() Option {
 func WithNoClear() Option {
 	return func(m *Model) {
 		m.useAltScreen = false
+	}
+}
+
+// WithReloadFunc registers a function that is called every interval to refresh
+// the item list while the picker is open.  The function runs asynchronously so
+// the UI remains responsive.  Spinners in the returned items are re-initialised
+// on each reload.  The current search query and cursor position are preserved
+// where possible.
+//
+// Example — refresh every second:
+//
+//	bfzf.New(initial, bfzf.WithReloadFunc(myItemSource, time.Second))
+func WithReloadFunc(fn func() []Item, interval time.Duration) Option {
+	return func(m *Model) {
+		m.reloadFunc = fn
+		m.reloadInterval = interval
 	}
 }

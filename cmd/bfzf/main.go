@@ -35,6 +35,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -173,6 +174,9 @@ type config struct {
 	outerBorder string // "rounded","sharp","bold","block","double","none"
 	noColor     bool
 	noClear     bool // disable alternate screen (leave output in scrollback)
+	// live reload
+	reloadCmd      string
+	reloadInterval int // milliseconds; 0 = disabled
 }
 
 // multiString is a flag.Value that accumulates repeated --bind values.
@@ -235,6 +239,8 @@ func parseFlags() config {
 	flag.StringVar(&cfg.outerBorder, "border", "", `wrap entire picker in a border: rounded (default when flag set), sharp, bold, block, double`)
 	flag.BoolVar(&cfg.noColor, "no-color", false, "disable all ANSI colour output")
 	flag.BoolVar(&cfg.noClear, "no-clear", false, "disable alternate screen: leave picker output in scrollback on exit (default: alt-screen is used)")
+	flag.StringVar(&cfg.reloadCmd, "reload-cmd", "", "shell command run periodically to refresh the item list (requires -reload-interval)")
+	flag.IntVar(&cfg.reloadInterval, "reload-interval", 0, "milliseconds between -reload-cmd executions; 0 disables live reload")
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -671,6 +677,21 @@ func main() {
 	}
 	if cfg.noClear {
 		opts = append(opts, bfzf.WithNoClear())
+	}
+	if cfg.reloadCmd != "" && cfg.reloadInterval > 0 {
+		reloadCmdStr := cfg.reloadCmd
+		groupPrefix := cfg.groupPrefix
+		spinnerPrefix := cfg.spinnerPrefix
+		withNth := cfg.withNth
+		reloadFn := func() []bfzf.Item {
+			out, err := exec.Command("sh", "-c", reloadCmdStr).Output()
+			if err != nil {
+				return nil
+			}
+			lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+			return parseItems(lines, groupPrefix, spinnerPrefix, withNth)
+		}
+		opts = append(opts, bfzf.WithReloadFunc(reloadFn, time.Duration(cfg.reloadInterval)*time.Millisecond))
 	}
 	for _, bindSpec := range cfg.bind {
 		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix)

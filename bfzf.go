@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
@@ -546,6 +547,15 @@ type Model struct {
 	paneResizing        bool
 	paneResizeDragX0    int
 	paneResizePreviewSz int // previewSize at drag start
+
+	// ── Live reload ──────────────────────────────────────────────────────────
+
+	// reloadFunc, when non-nil, is called every reloadInterval to refresh the
+	// item list while the picker is open.
+	reloadFunc func() []Item
+	// reloadInterval is the period between reloadFunc calls.
+	// Zero disables live reload.
+	reloadInterval time.Duration
 }
 
 // New creates a new Model with the provided items and options.
@@ -618,16 +628,30 @@ func New(items []Item, opts ...Option) Model {
 	return m
 }
 
+// reloadTickMsg is sent periodically to trigger a live item reload.
+type reloadTickMsg struct{}
+
+// reloadResultMsg carries a freshly-loaded item list back to the model.
+type reloadResultMsg struct{ items []Item }
+
+// reloadTick returns a tea.Cmd that fires reloadTickMsg after d.
+func reloadTick(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return reloadTickMsg{} })
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // tea.Model implementation
 // ────────────────────────────────────────────────────────────────────────────
 
 // Init implements [tea.Model].
 func (m Model) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0, 1+len(m.spinners))
+	cmds := make([]tea.Cmd, 0, 2+len(m.spinners))
 	cmds = append(cmds, m.input.Focus())
 	for _, s := range m.spinners {
 		cmds = append(cmds, s.Tick)
+	}
+	if m.reloadFunc != nil && m.reloadInterval > 0 {
+		cmds = append(cmds, reloadTick(m.reloadInterval))
 	}
 	return tea.Batch(cmds...)
 }
@@ -653,6 +677,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Discard stale responses: only apply if the item is still focused.
 		if msg.itemIdx == m.lastPreviewIdx {
 			m.previewVP.SetContent(truncatePreviewLines(msg.content, m.previewVP.Width()))
+		}
+
+	case reloadTickMsg:
+		// Fire the reload function asynchronously so the UI stays responsive.
+		if m.reloadFunc != nil {
+			fn := m.reloadFunc
+			cmds = append(cmds, func() tea.Msg {
+				return reloadResultMsg{items: fn()}
+			})
+		}
+
+	case reloadResultMsg:
+		// Replace items, preserving the current query. Spinners are re-initialised
+		// from the new item list. Cursor is clamped but not reset to 0.
+		newItems := msg.items
+		m.items = newItems
+		m.spinners = make(map[int]spinner.Model, len(newItems))
+		for i, item := range newItems {
+			if si, ok := item.(SpinnerItem); ok {
+				s := si.Spinner()
+				if s.Spinner.FPS == 0 {
+					s.Spinner = spinner.Dot
+				}
+				m.spinners[i] = s
+				cmds = append(cmds, s.Tick)
+			}
+		}
+		m.updateFilter()
+		if m.cursorPos >= len(m.selectableIdxs) {
+			m.cursorPos = max(0, len(m.selectableIdxs)-1)
+		}
+		// Re-schedule the next reload tick.
+		if m.reloadInterval > 0 {
+			cmds = append(cmds, reloadTick(m.reloadInterval))
 		}
 
 	case tea.KeyPressMsg:
