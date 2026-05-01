@@ -763,13 +763,19 @@ func main() {
 
 	w := bufio.NewWriter(os.Stdout)
 	for i, item := range selected {
+		// Use the full raw line when available (e.g. --with-nth items) so that
+		// callers can access all tab-delimited fields via cut/awk.
+		label := item.Label()
+		if rl, ok := item.(RawLabeler); ok {
+			label = rl.RawLabel()
+		}
 		if cfg.print0 {
-			fmt.Fprintf(w, "%s\x00", item.Label())
+			fmt.Fprintf(w, "%s\x00", label)
 		} else {
 			if i > 0 {
 				fmt.Fprintln(w)
 			}
-			fmt.Fprint(w, item.Label())
+			fmt.Fprint(w, label)
 		}
 	}
 	if !cfg.print0 {
