@@ -1,8 +1,8 @@
 package bfzf
 
 import (
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 )
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -12,7 +12,11 @@ import (
 // PreviewFunc is a function that computes the preview content for a focused
 // item. It runs inside a [tea.Cmd] goroutine, so it may safely block (e.g.
 // reading a file or running a subprocess).
-type PreviewFunc func(item Item) string
+//
+// cols and lines report the current dimensions of the preview viewport so the
+// function (or the subprocess it spawns) can size its output accordingly —
+// matching the fzf FZF_PREVIEW_COLUMNS / FZF_PREVIEW_LINES behaviour.
+type PreviewFunc func(item Item, cols, lines int) string
 
 // PreviewPosition controls the placement of the preview pane.
 type PreviewPosition int
@@ -57,8 +61,10 @@ func (m *Model) triggerPreview() tea.Cmd {
 	m.lastPreviewIdx = idx
 	item := m.items[idx]
 	fn := m.previewFunc
+	cols := m.previewVP.Width()
+	lines := m.previewVP.Height()
 	return func() tea.Msg {
-		return previewResultMsg{content: fn(item), itemIdx: idx}
+		return previewResultMsg{content: fn(item, cols, lines), itemIdx: idx}
 	}
 }
 

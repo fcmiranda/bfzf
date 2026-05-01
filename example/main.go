@@ -36,9 +36,9 @@ type spinnerLangItem struct {
 	spinDef spinner.Model
 }
 
-func (s spinnerLangItem) Label() string       { return s.name }
-func (s spinnerLangItem) FilterValue() string { return s.name }
-func (s spinnerLangItem) IsHeader() bool      { return false }
+func (s spinnerLangItem) Label() string          { return s.name }
+func (s spinnerLangItem) FilterValue() string    { return s.name }
+func (s spinnerLangItem) IsHeader() bool         { return false }
 func (s spinnerLangItem) Spinner() spinner.Model { return s.spinDef }
 
 // newSpinnerItem creates a SpinnerItem with the given preset and ANSI 256 color code.
@@ -157,7 +157,7 @@ func main() {
 		bfzf.WithStyles(customStyles()),
 		bfzf.WithReverse(),
 		bfzf.WithQuery("go"),
-		bfzf.WithPreview(func(item bfzf.Item) string {
+		bfzf.WithPreview(func(item bfzf.Item, cols, lines int) string {
 			return "Preview: " + item.Label()
 		}),
 		bfzf.WithPreviewHidden(),

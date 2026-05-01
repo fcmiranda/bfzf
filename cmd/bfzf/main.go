@@ -467,7 +467,7 @@ func expandPreviewTemplate(tmpl, label string) string {
 // Color-forcing environment variables are injected so tools like bat, highlight,
 // and ls --color automatically produce coloured output in the preview pane.
 func makeShellPreview(cmdTemplate string) bfzf.PreviewFunc {
-	return func(item bfzf.Item) string {
+	return func(item bfzf.Item, cols, lines int) string {
 		// When --with-nth is active the item carries a full raw line (all
 		// tab-delimited fields).  Use that for template expansion so {1}, {2}
 		// etc. resolve against the original fields, not just the display label.
@@ -480,11 +480,16 @@ func makeShellPreview(cmdTemplate string) bfzf.PreviewFunc {
 		c := exec.Command("sh", "-c", cmd) // #nosec G204 — intentional user command
 		// Inherit the current environment and layer in color-forcing variables
 		// so preview commands produce ANSI-coloured output (matches fzf behaviour).
+		// FZF_PREVIEW_COLUMNS / FZF_PREVIEW_LINES mirror fzf's env convention so
+		// preview commands (e.g. bat, tmux capture-pane wrappers) can size their
+		// output to exactly fit the preview viewport.
 		c.Env = append(os.Environ(),
 			"TERM=xterm-256color",
 			"COLORTERM=truecolor",
 			"CLICOLOR_FORCE=1", // BSD/macOS ls, many CLIs
 			"FORCE_COLOR=3",    // npm/Node ecosystem
+			fmt.Sprintf("FZF_PREVIEW_COLUMNS=%d", cols),
+			fmt.Sprintf("FZF_PREVIEW_LINES=%d", lines),
 		)
 		out, err := c.Output()
 		if err != nil {

@@ -1531,7 +1531,7 @@ func (m *Model) renderPreviewPane() string {
 	// this, navigating between items causes a 1-row height shift that makes the
 	// layout jump.
 	vpView = m.renderPreviewWithScrollbar(vpView)
-	titleRow := titleStr + lineCount
+	titleRow := lipgloss.NewStyle().Width(m.previewVP.Width()).Render(titleStr + lineCount)
 	return titleRow + "\n" + vpView
 }
 
@@ -2132,7 +2132,11 @@ func (m *Model) resize() {
 			m.styles.ListBorder = m.styles.ListBorder.Width(m.vp.Width())
 		}
 		if m.showPreviewBorder {
-			m.styles.PreviewBorder = m.styles.PreviewBorder.Width(m.previewVP.Width())
+			// Use the outer area width (prevAreaW), not the inner viewport width.
+			// lipgloss v2 Width(n) is the total outer width; it subtracts the
+			// horizontal border frame before wrapping, so using the inner width
+			// would cause wrapAt = inner - borderSize, truncating content lines.
+			m.styles.PreviewBorder = m.styles.PreviewBorder.Width(prevAreaW)
 		}
 
 		// Mouse hit-testing coordinates.
@@ -2174,7 +2178,9 @@ func (m *Model) resize() {
 			m.styles.ListBorder = m.styles.ListBorder.Width(m.vp.Width())
 		}
 		if m.showPreviewBorder {
-			m.styles.PreviewBorder = m.styles.PreviewBorder.Width(m.previewVP.Width())
+			// Same reasoning as PreviewRight: Width must be the outer area
+			// width (effW) so lipgloss wraps at effW-borderSize = viewport width.
+			m.styles.PreviewBorder = m.styles.PreviewBorder.Width(effW)
 		}
 
 		listBorderV := 0
