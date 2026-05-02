@@ -85,11 +85,11 @@ func (w withNthSpinnerItem) Spinner() spinner.Model { return w.s }
 
 // newWithNthSpinnerItem creates a spinner-animated item that displays field n of
 // the tab-delimited line and stores the full raw line for preview expansion.
-func newWithNthSpinnerItem(line string, n int) withNthSpinnerItem {
+func newWithNthSpinnerItem(line string, n int, sp spinner.Spinner) withNthSpinnerItem {
 	return withNthSpinnerItem{
 		withNthItem: newWithNthItem(line, n),
 		s: spinner.New(
-			spinner.WithSpinner(spinner.Dot),
+			spinner.WithSpinner(sp),
 			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("214"))),
 		),
 	}
@@ -110,14 +110,60 @@ func (c cliSpinnerItem) FilterValue() string    { return c.text }
 func (c cliSpinnerItem) IsHeader() bool         { return false }
 func (c cliSpinnerItem) Spinner() spinner.Model { return c.s }
 
-// newCLISpinnerItem creates a spinner-annotated item with an orange Dot spinner.
-func newCLISpinnerItem(text string) cliSpinnerItem {
+// newCLISpinnerItem creates a spinner-annotated item with the given spinner preset.
+func newCLISpinnerItem(text string, sp spinner.Spinner) cliSpinnerItem {
 	return cliSpinnerItem{
 		text: text,
 		s: spinner.New(
-			spinner.WithSpinner(spinner.Dot),
+			spinner.WithSpinner(sp),
 			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("214"))),
 		),
+	}
+}
+
+// spinnerFromName resolves a named preset (matching hooker.ts names) to a
+// spinner.Spinner. Unrecognised names fall back to Dot.
+func spinnerFromName(name string) spinner.Spinner {
+	switch name {
+	case "minidot":
+		return spinner.MiniDot
+	case "line":
+		return spinner.Line
+	case "jump":
+		return spinner.Jump
+	case "pulse":
+		return spinner.Pulse
+	case "points":
+		return spinner.Points
+	case "meter":
+		return spinner.Meter
+	case "hamburger":
+		return spinner.Hamburger
+	case "ellipsis":
+		return spinner.Ellipsis
+	case "globe":
+		return spinner.Globe
+	case "moon":
+		return spinner.Moon
+	case "monkey":
+		return spinner.Monkey
+	case "arc":
+		return spinner.Spinner{
+			Frames: []string{"◜", "◠", "◝", "◞", "◡", "◟"},
+			FPS:    time.Second / 7,
+		}
+	case "nerd":
+		return spinner.Spinner{
+			Frames: []string{"", "", "", "", "", ""},
+			FPS:    time.Second / 10,
+		}
+	case "nerdarc":
+		return spinner.Spinner{
+			Frames: []string{"◜", "", "◝", "◞", "◡", "◟", ""},
+			FPS:    time.Second / 8,
+		}
+	default: // "dot" and anything unrecognised
+		return spinner.Dot
 	}
 }
 
@@ -177,6 +223,8 @@ type config struct {
 	// live reload
 	reloadCmd      string
 	reloadInterval int // milliseconds; 0 = disabled
+	// spinner
+	spinnerName string // named preset for spinner items (default: "dot")
 }
 
 // multiString is a flag.Value that accumulates repeated --bind values.
@@ -199,6 +247,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.height, "height", "", `component height: absolute lines (e.g. "20") or percentage (e.g. "40%"); empty = full screen`)
 	flag.StringVar(&cfg.groupPrefix, "group-prefix", "", "lines with this prefix become group headers (prefix stripped)")
 	flag.StringVar(&cfg.spinnerPrefix, "spinner-prefix", "", "lines with this prefix get an animated spinner (prefix stripped)")
+	flag.StringVar(&cfg.spinnerName, "spinner", "dot", `spinner animation preset for spinner-prefix items: dot, minidot, line, jump, pulse, points, meter, hamburger, ellipsis, globe, moon, monkey, arc, nerd, nerdarc`)
 	flag.StringVar(&cfg.cursor, "cursor", "", `cursor prefix glyph (default "❯ ")`)
 	flag.StringVar(&cfg.marker, "marker", "", "multi-select marker style: circles (default), squares, filled, arrows, checkmarks, stars, diamonds")
 	flag.StringVar(&cfg.popup, "popup", "", `start in tmux/Zellij popup; value is geometry: [center|top|bottom|left|right][,W%][,H%] (e.g. "center", "left,40%,90%")`)
@@ -367,7 +416,7 @@ func readJSON(r *os.File) ([]bfzf.Item, error) {
 		case entry.Header:
 			items = append(items, bfzf.NewHeader(entry.Label))
 		case entry.Spinner:
-			items = append(items, newCLISpinnerItem(entry.Label))
+			items = append(items, newCLISpinnerItem(entry.Label, spinner.Dot))
 		default:
 			items = append(items, bfzf.NewItem(entry.Label))
 		}
@@ -379,7 +428,7 @@ func readJSON(r *os.File) ([]bfzf.Item, error) {
 // Item parsing (plain text — group-prefix / spinner-prefix annotation)
 // ────────────────────────────────────────────────────────────────────────────
 
-func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int) []bfzf.Item {
+func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int, sp spinner.Spinner) []bfzf.Item {
 	items := make([]bfzf.Item, 0, len(lines))
 	for _, line := range lines {
 		switch {
@@ -388,9 +437,9 @@ func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int) 
 		case spinnerPrefix != "" && strings.HasPrefix(line, spinnerPrefix):
 			stripped := strings.TrimPrefix(line, spinnerPrefix)
 			if withNth > 0 {
-				items = append(items, newWithNthSpinnerItem(stripped, withNth))
+				items = append(items, newWithNthSpinnerItem(stripped, withNth, sp))
 			} else {
-				items = append(items, newCLISpinnerItem(stripped))
+				items = append(items, newCLISpinnerItem(stripped, sp))
 			}
 		default:
 			if withNth > 0 {
@@ -518,7 +567,7 @@ func main() {
 
 	if flag.NArg() > 0 {
 		// Positional arguments take priority over stdin.
-		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth)
+		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName))
 	} else {
 		stat, err := os.Stdin.Stat()
 		if err != nil {
@@ -544,7 +593,7 @@ func main() {
 					rawLines = append(rawLines, line)
 				}
 			}
-			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth)
+			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName))
 		} else {
 			stdinUsed = true
 
@@ -564,7 +613,7 @@ func main() {
 					fmt.Fprintln(os.Stderr, "bfzf: error reading stdin:", err)
 					os.Exit(1)
 				}
-				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth)
+				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName))
 			}
 		}
 	}
@@ -688,18 +737,19 @@ func main() {
 		groupPrefix := cfg.groupPrefix
 		spinnerPrefix := cfg.spinnerPrefix
 		withNth := cfg.withNth
+		sp := spinnerFromName(cfg.spinnerName)
 		reloadFn := func() []bfzf.Item {
 			out, err := exec.Command("sh", "-c", reloadCmdStr).Output()
 			if err != nil {
 				return nil
 			}
 			lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-			return parseItems(lines, groupPrefix, spinnerPrefix, withNth)
+			return parseItems(lines, groupPrefix, spinnerPrefix, withNth, sp)
 		}
 		opts = append(opts, bfzf.WithReloadFunc(reloadFn, time.Duration(cfg.reloadInterval)*time.Millisecond))
 	}
 	for _, bindSpec := range cfg.bind {
-		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix)
+		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix, spinnerFromName(cfg.spinnerName))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "bfzf:", err)
 			os.Exit(1)
@@ -825,7 +875,7 @@ func parseHeightArg(s string) (abs int, pct int, ok bool) {
 //   - abort
 //   - accept
 //   - reload(shell-cmd)
-func parseBind(spec, groupPrefix, spinnerPrefix string) (string, bfzf.BindFunc, error) {
+func parseBind(spec, groupPrefix, spinnerPrefix string, sp spinner.Spinner) (string, bfzf.BindFunc, error) {
 	i := strings.Index(spec, ":")
 	if i < 0 {
 		return "", nil, fmt.Errorf("invalid --bind %q: expected key:action", spec)
@@ -864,7 +914,7 @@ func parseBind(spec, groupPrefix, spinnerPrefix string) (string, bfzf.BindFunc, 
 					lines = append(lines, line)
 				}
 			}
-			return parseItems(lines, groupPrefix, spinnerPrefix, 0)
+			return parseItems(lines, groupPrefix, spinnerPrefix, 0, sp)
 		})
 	default:
 		return "", nil, fmt.Errorf("unrecognised bind action %q in %q", action, spec)
