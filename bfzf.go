@@ -1990,7 +1990,11 @@ func (m *Model) resize() {
 		effH = max(1, effH-m.outerBorderStyle.GetVerticalFrameSize())
 		// Pin the outer border's inner width so its right │ always lands at
 		// column m.width-1 regardless of what content lines contain.
-		m.outerBorderStyle = m.outerBorderStyle.Width(effW)
+		// Width(n) in lipgloss v2 is the OUTER total width; it subtracts the
+		// border frame internally before wrapping, so we must pass m.width
+		// (the full terminal width) — not effW (already inner) — to get
+		// wrapAt == effW, matching the content width exactly.
+		m.outerBorderStyle = m.outerBorderStyle.Width(m.width)
 	}
 
 	// Fixed rows consumed by the input, title, info, and help line.
@@ -2067,7 +2071,7 @@ func (m *Model) resize() {
 		m.vp.SetWidth(vpW)
 		// Ensure the list border spans the full area width.
 		if m.showListBorder {
-			m.styles.ListBorder = m.styles.ListBorder.Width(vpW)
+			m.styles.ListBorder = m.styles.ListBorder.Width(effW)
 		}
 		m.scrollbarScreenX = -1
 		m.dividerScreenX = -1
@@ -2129,10 +2133,9 @@ func (m *Model) resize() {
 		// Set explicit inner widths on border styles so they always span the
 		// full area width regardless of content length (fixes right-border gap).
 		if m.showListBorder {
-			m.styles.ListBorder = m.styles.ListBorder.Width(m.vp.Width())
+			m.styles.ListBorder = m.styles.ListBorder.Width(listAreaW)
 		}
 		if m.showPreviewBorder {
-			// Use the outer area width (prevAreaW), not the inner viewport width.
 			// lipgloss v2 Width(n) is the total outer width; it subtracts the
 			// horizontal border frame before wrapping, so using the inner width
 			// would cause wrapAt = inner - borderSize, truncating content lines.
@@ -2175,7 +2178,7 @@ func (m *Model) resize() {
 
 		// Ensure borders span the full width.
 		if m.showListBorder {
-			m.styles.ListBorder = m.styles.ListBorder.Width(m.vp.Width())
+			m.styles.ListBorder = m.styles.ListBorder.Width(effW)
 		}
 		if m.showPreviewBorder {
 			// Same reasoning as PreviewRight: Width must be the outer area
