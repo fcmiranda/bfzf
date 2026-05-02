@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"regexp"
@@ -85,12 +86,12 @@ func (w withNthSpinnerItem) Spinner() spinner.Model { return w.s }
 
 // newWithNthSpinnerItem creates a spinner-animated item that displays field n of
 // the tab-delimited line and stores the full raw line for preview expansion.
-func newWithNthSpinnerItem(line string, n int, sp spinner.Spinner) withNthSpinnerItem {
+func newWithNthSpinnerItem(line string, n int, sp spinner.Spinner, color color.Color) withNthSpinnerItem {
 	return withNthSpinnerItem{
 		withNthItem: newWithNthItem(line, n),
 		s: spinner.New(
 			spinner.WithSpinner(sp),
-			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("214"))),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(color)),
 		),
 	}
 }
@@ -110,13 +111,13 @@ func (c cliSpinnerItem) FilterValue() string    { return c.text }
 func (c cliSpinnerItem) IsHeader() bool         { return false }
 func (c cliSpinnerItem) Spinner() spinner.Model { return c.s }
 
-// newCLISpinnerItem creates a spinner-annotated item with the given spinner preset.
-func newCLISpinnerItem(text string, sp spinner.Spinner) cliSpinnerItem {
+// newCLISpinnerItem creates a spinner-annotated item with the given spinner preset and color.
+func newCLISpinnerItem(text string, sp spinner.Spinner, color color.Color) cliSpinnerItem {
 	return cliSpinnerItem{
 		text: text,
 		s: spinner.New(
 			spinner.WithSpinner(sp),
-			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("214"))),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(color)),
 		),
 	}
 }
@@ -224,7 +225,11 @@ type config struct {
 	reloadCmd      string
 	reloadInterval int // milliseconds; 0 = disabled
 	// spinner
-	spinnerName string // named preset for spinner items (default: "dot")
+	spinnerName  string // named preset for spinner items (default: "dot")
+	spinnerColor string // lipgloss color for spinner (named, #hex, or 0-255)
+	// popup title
+	popupTitle      string // title shown in the tmux popup border
+	popupTitleColor string // color for the popup title (0-255 ANSI index, #hex, or named)
 }
 
 // multiString is a flag.Value that accumulates repeated --bind values.
@@ -248,6 +253,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.groupPrefix, "group-prefix", "", "lines with this prefix become group headers (prefix stripped)")
 	flag.StringVar(&cfg.spinnerPrefix, "spinner-prefix", "", "lines with this prefix get an animated spinner (prefix stripped)")
 	flag.StringVar(&cfg.spinnerName, "spinner", "dot", `spinner animation preset for spinner-prefix items: dot, minidot, line, jump, pulse, points, meter, hamburger, ellipsis, globe, moon, monkey, arc, nerd, nerdarc`)
+	flag.StringVar(&cfg.spinnerColor, "spinner-color", "214", `color for spinner items: named ("yellow"), #hex ("#fabd2f"), or 0-255 terminal index ("214")`)
 	flag.StringVar(&cfg.cursor, "cursor", "", `cursor prefix glyph (default "❯ ")`)
 	flag.StringVar(&cfg.marker, "marker", "", "multi-select marker style: circles (default), squares, filled, arrows, checkmarks, stars, diamonds")
 	flag.StringVar(&cfg.popup, "popup", "", `start in tmux/Zellij popup; value is geometry: [center|top|bottom|left|right][,W%][,H%] (e.g. "center", "left,40%,90%")`)
@@ -290,6 +296,8 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.noClear, "no-clear", false, "disable alternate screen: leave picker output in scrollback on exit (default: alt-screen is used)")
 	flag.StringVar(&cfg.reloadCmd, "reload-cmd", "", "shell command run periodically to refresh the item list (requires -reload-interval)")
 	flag.IntVar(&cfg.reloadInterval, "reload-interval", 0, "milliseconds between -reload-cmd executions; 0 disables live reload")
+	flag.StringVar(&cfg.popupTitle, "popup-title", "", "title text shown in the tmux popup border (requires --popup)")
+	flag.StringVar(&cfg.popupTitleColor, "popup-title-color", "", `color for the popup title: 0-255 ANSI index ("214"), #hex ("#fabd2f"), or named ("yellow"); empty = terminal default`)
 
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: bfzf [flags] [item ...]")
@@ -375,7 +383,7 @@ type jsonEntry struct {
 
 // readJSON parses stdin as a JSON array of strings or objects.
 // Mixed arrays are not allowed; format is detected from the first element.
-func readJSON(r *os.File) ([]bfzf.Item, error) {
+func readJSON(r *os.File, sp spinner.Spinner, spinnerColor color.Color) ([]bfzf.Item, error) {
 	dec := json.NewDecoder(bufio.NewReader(r))
 
 	// Expect opening '['
@@ -416,7 +424,7 @@ func readJSON(r *os.File) ([]bfzf.Item, error) {
 		case entry.Header:
 			items = append(items, bfzf.NewHeader(entry.Label))
 		case entry.Spinner:
-			items = append(items, newCLISpinnerItem(entry.Label, spinner.Dot))
+			items = append(items, newCLISpinnerItem(entry.Label, sp, spinnerColor))
 		default:
 			items = append(items, bfzf.NewItem(entry.Label))
 		}
@@ -428,7 +436,7 @@ func readJSON(r *os.File) ([]bfzf.Item, error) {
 // Item parsing (plain text — group-prefix / spinner-prefix annotation)
 // ────────────────────────────────────────────────────────────────────────────
 
-func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int, sp spinner.Spinner) []bfzf.Item {
+func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int, sp spinner.Spinner, color color.Color) []bfzf.Item {
 	items := make([]bfzf.Item, 0, len(lines))
 	for _, line := range lines {
 		switch {
@@ -437,9 +445,9 @@ func parseItems(lines []string, groupPrefix, spinnerPrefix string, withNth int, 
 		case spinnerPrefix != "" && strings.HasPrefix(line, spinnerPrefix):
 			stripped := strings.TrimPrefix(line, spinnerPrefix)
 			if withNth > 0 {
-				items = append(items, newWithNthSpinnerItem(stripped, withNth, sp))
+				items = append(items, newWithNthSpinnerItem(stripped, withNth, sp, color))
 			} else {
-				items = append(items, newCLISpinnerItem(stripped, sp))
+				items = append(items, newCLISpinnerItem(stripped, sp, color))
 			}
 		default:
 			if withNth > 0 {
@@ -567,7 +575,7 @@ func main() {
 
 	if flag.NArg() > 0 {
 		// Positional arguments take priority over stdin.
-		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName))
+		items = parseItems(flag.Args(), cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName), lipgloss.Color(cfg.spinnerColor))
 	} else {
 		stat, err := os.Stdin.Stat()
 		if err != nil {
@@ -593,12 +601,12 @@ func main() {
 					rawLines = append(rawLines, line)
 				}
 			}
-			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName))
+			items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName), lipgloss.Color(cfg.spinnerColor))
 		} else {
 			stdinUsed = true
 
 			if cfg.jsonInput {
-				items, err = readJSON(os.Stdin)
+				items, err = readJSON(os.Stdin, spinnerFromName(cfg.spinnerName), lipgloss.Color(cfg.spinnerColor))
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "bfzf:", err)
 					os.Exit(1)
@@ -613,7 +621,7 @@ func main() {
 					fmt.Fprintln(os.Stderr, "bfzf: error reading stdin:", err)
 					os.Exit(1)
 				}
-				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName))
+				items = parseItems(rawLines, cfg.groupPrefix, cfg.spinnerPrefix, cfg.withNth, spinnerFromName(cfg.spinnerName), lipgloss.Color(cfg.spinnerColor))
 			}
 		}
 	}
@@ -738,18 +746,19 @@ func main() {
 		spinnerPrefix := cfg.spinnerPrefix
 		withNth := cfg.withNth
 		sp := spinnerFromName(cfg.spinnerName)
+		color := lipgloss.Color(cfg.spinnerColor)
 		reloadFn := func() []bfzf.Item {
 			out, err := exec.Command("sh", "-c", reloadCmdStr).Output()
 			if err != nil {
 				return nil
 			}
 			lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-			return parseItems(lines, groupPrefix, spinnerPrefix, withNth, sp)
+			return parseItems(lines, groupPrefix, spinnerPrefix, withNth, sp, color)
 		}
 		opts = append(opts, bfzf.WithReloadFunc(reloadFn, time.Duration(cfg.reloadInterval)*time.Millisecond))
 	}
 	for _, bindSpec := range cfg.bind {
-		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix, spinnerFromName(cfg.spinnerName))
+		keyStr, fn, err := parseBind(bindSpec, cfg.groupPrefix, cfg.spinnerPrefix, spinnerFromName(cfg.spinnerName), lipgloss.Color(cfg.spinnerColor))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "bfzf:", err)
 			os.Exit(1)
@@ -758,7 +767,7 @@ func main() {
 	}
 	// Popup mode: after items are ready, re-launch inside tmux/Zellij popup.
 	if cfg.popup != "" && os.Getenv("BFZF_IN_POPUP") == "" {
-		if err := runPopup(cfg.popup, items, cfg.groupPrefix, cfg.spinnerPrefix, stdinUsed); err != nil {
+		if err := runPopup(cfg.popup, cfg.popupTitle, cfg.popupTitleColor, items, cfg.groupPrefix, cfg.spinnerPrefix, stdinUsed); err != nil {
 			fmt.Fprintln(os.Stderr, "bfzf:", err)
 			os.Exit(1)
 		}
@@ -875,7 +884,7 @@ func parseHeightArg(s string) (abs int, pct int, ok bool) {
 //   - abort
 //   - accept
 //   - reload(shell-cmd)
-func parseBind(spec, groupPrefix, spinnerPrefix string, sp spinner.Spinner) (string, bfzf.BindFunc, error) {
+func parseBind(spec, groupPrefix, spinnerPrefix string, sp spinner.Spinner, spinnerColor color.Color) (string, bfzf.BindFunc, error) {
 	i := strings.Index(spec, ":")
 	if i < 0 {
 		return "", nil, fmt.Errorf("invalid --bind %q: expected key:action", spec)
@@ -914,7 +923,7 @@ func parseBind(spec, groupPrefix, spinnerPrefix string, sp spinner.Spinner) (str
 					lines = append(lines, line)
 				}
 			}
-			return parseItems(lines, groupPrefix, spinnerPrefix, 0, sp)
+			return parseItems(lines, groupPrefix, spinnerPrefix, 0, sp, spinnerColor)
 		})
 	default:
 		return "", nil, fmt.Errorf("unrecognised bind action %q in %q", action, spec)
@@ -1039,7 +1048,7 @@ func parsePopupSpec(s string) popupSpec {
 // runPopup serialises items to a temp file (when stdin was the source), builds
 // an inner bfzf command, and runs it inside a tmux or Zellij popup.  The
 // selected output written by the subprocess is forwarded to our stdout.
-func runPopup(popupArg string, items []bfzf.Item, groupPrefix, spinnerPrefix string, stdinUsed bool) error {
+func runPopup(popupArg, title, titleColor string, items []bfzf.Item, groupPrefix, spinnerPrefix string, stdinUsed bool) error {
 	spec := parsePopupSpec(popupArg)
 
 	exe, err := os.Executable()
@@ -1109,7 +1118,7 @@ func runPopup(popupArg string, items []bfzf.Item, groupPrefix, spinnerPrefix str
 	// Launch via the detected multiplexer.
 	switch {
 	case os.Getenv("TMUX") != "":
-		err = runTmuxPopup(spec, innerCmd)
+		err = runTmuxPopup(spec, title, titleColor, innerCmd)
 	case os.Getenv("ZELLIJ") != "" || os.Getenv("ZELLIJ_SESSION_NAME") != "":
 		err = runZellijPopup(spec, innerCmd)
 	default:
@@ -1130,7 +1139,7 @@ func runPopup(popupArg string, items []bfzf.Item, groupPrefix, spinnerPrefix str
 }
 
 // runTmuxPopup launches innerCmd inside a tmux display-popup window.
-func runTmuxPopup(spec popupSpec, innerCmd string) error {
+func runTmuxPopup(spec popupSpec, title, titleColor, innerCmd string) error {
 	args := []string{"display-popup", "-E", "-w", spec.width, "-h", spec.height}
 	switch spec.position {
 	case "top":
@@ -1142,6 +1151,14 @@ func runTmuxPopup(spec popupSpec, innerCmd string) error {
 	case "right":
 		args = append(args, "-x", "R")
 		// center: tmux default (no -x/-y needed)
+	}
+	if title != "" {
+		// Apply optional color via tmux inline style attribute (#[fg=...]).
+		displayTitle := title
+		if titleColor != "" {
+			displayTitle = tmuxColorAttr(titleColor) + title + "#[default]"
+		}
+		args = append(args, "-T", displayTitle)
 	}
 	args = append(args, "--", "sh", "-c", innerCmd)
 	cmd := exec.Command("tmux", args...) // #nosec G204
@@ -1160,4 +1177,23 @@ func runZellijPopup(spec popupSpec, innerCmd string) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// tmuxColorAttr converts a color spec (0-255 ANSI index, #RRGGBB hex, or named)
+// into a tmux inline style attribute string suitable for embedding in a -T title.
+//
+//	214        →  #[fg=colour214]
+//	#fabd2f    →  #[fg=#fabd2f]
+//	yellow     →  #[fg=yellow]
+func tmuxColorAttr(c string) string {
+	c = strings.TrimSpace(c)
+	if c == "" {
+		return ""
+	}
+	// Numeric ANSI 256 index → tmux "colour{N}" syntax.
+	if _, err := strconv.Atoi(c); err == nil {
+		return fmt.Sprintf("#[fg=colour%s]", c)
+	}
+	// Hex or named — tmux accepts both directly.
+	return fmt.Sprintf("#[fg=%s]", c)
 }
